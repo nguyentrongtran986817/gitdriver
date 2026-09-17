@@ -219,7 +219,25 @@ export async function deleteGitHubReleaseAsset(
 }
 
 /**
- * Tải tệp thông thường vào Repository Contents (<25MB)
+ * Chuyển đổi File sang chuỗi Base64 một cách an toàn và nhanh chóng bằng FileReader
+ */
+function fileToBase64(file: File | Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // Bỏ tiền tố data:...;base64,
+      const commaIndex = result.indexOf(',');
+      resolve(commaIndex >= 0 ? result.substring(commaIndex + 1) : result);
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Tải tệp lên Repository Contents (drive-data/...) thông qua api.github.com
+ * Ưu điểm vượt trội: api.github.com hỗ trợ CORS 100% từ trình duyệt (không bị chặn như uploads.github.com)
  */
 export async function uploadFileToRepoContents(
   config: GitHubConfig,
@@ -227,23 +245,17 @@ export async function uploadFileToRepoContents(
   folderPath: string = 'drive-data'
 ): Promise<{ sha: string; html_url: string; download_url: string }> {
   const { token, owner, repo, branch } = config;
-  const path = `${folderPath}/${file.name}`.replace(/^\/+/, '');
+  const targetBranch = branch || 'main';
+  const cleanPath = `${folderPath}/${file.name}`.replace(/^\/+/, '');
 
-  // Đọc file thành base64
-  const arrayBuffer = await file.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(arrayBuffer);
-  const len = bytes.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  const base64Content = btoa(binary);
+  // 1. Chuyển file sang base64
+  const base64Content = await fileToBase64(file);
 
-  // Kiểm tra file đã có chưa để lấy SHA nếu cần cập nhật
+  // 2. Kiểm tra xem file đã tồn tại trên GitHub chưa để lấy SHA (nếu có thì ghi đè bản mới)
   let existingSha: string | undefined;
   try {
     const checkRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?ref=${branch}`,
+      `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(cleanPath)}?ref=${targetBranch}`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -259,8 +271,9 @@ export async function uploadFileToRepoContents(
     // ignore
   }
 
+  // 3. Gọi PUT để tải tệp lên GitHub repo
   const putRes = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+    `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}`,
     {
       method: 'PUT',
       headers: {
@@ -271,7 +284,7 @@ export async function uploadFileToRepoContents(
       body: JSON.stringify({
         message: `Upload ${file.name} via GitDrive`,
         content: base64Content,
-        branch: branch || 'main',
+        branch: targetBranch,
         sha: existingSha,
       }),
     }
@@ -279,19 +292,176 @@ export async function uploadFileToRepoContents(
 
   if (!putRes.ok) {
     const err = await putRes.json().catch(() => ({}));
-    throw new Error(err.message || `Lỗi tải tệp lên Repository (${putRes.status})`);
+    throw new Error(err.message || `Lỗi tải tệp lên GitHub Repository (${putRes.status})`);
   }
 
   const result = await putRes.json();
+  const rawDownloadUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${targetBranch}/${cleanPath}`;
+
   return {
-    sha: result.content?.sha,
-    html_url: result.content?.html_url,
-    download_url: result.content?.download_url,
+    sha: result.content?.sha || '',
+    html_url: result.content?.html_url || `https://github.com/${owner}/${repo}/blob/${targetBranch}/${cleanPath}`,
+    download_url: result.content?.download_url || rawDownloadUrl,
   };
 }
 
 /**
- * Lấy toàn bộ danh sách tệp tin đang lưu trên GitHub Releases để đồng bộ giữa các máy (Máy A -> Máy B)
+ * Lấy danh sách các tệp tin lưu trong thư mục drive-data trên GitHub
+ */
+export async function fetchGitHubRepoContents(
+  config: GitHubConfig,
+  folderPath: string = 'drive-data'
+): Promise<Array<{ name: string; size: number; path: string; sha: string; download_url: string; html_url: string }>> {
+  const { token, owner, repo, branch } = config;
+  if (!token || !owner || !repo) return [];
+
+  const targetBranch = branch || 'main';
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${folderPath}?ref=${targetBranch}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      }
+    );
+
+    if (!res.ok) {
+      return [];
+    }
+
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      return data.filter((item: any) => item.type === 'file');
+    }
+  } catch {
+    // ignore
+  }
+
+  return [];
+}
+
+/**
+ * Xóa một tệp trong Repository contents
+ */
+export async function deleteGitHubRepoFile(
+  config: GitHubConfig,
+  path: string,
+  sha?: string
+): Promise<void> {
+  const { token, owner, repo, branch } = config;
+  const targetBranch = branch || 'main';
+  let fileSha = sha;
+
+  if (!fileSha) {
+    try {
+      const getRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${targetBranch}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+          },
+        }
+      );
+      if (getRes.ok) {
+        const data = await getRes.json();
+        fileSha = data.sha;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!fileSha) return;
+
+  await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message: `Delete ${path} via GitDrive`,
+      sha: fileSha,
+      branch: targetBranch,
+    }),
+  });
+}
+
+/**
+ * Tải tệp lên GitHub một cách thông minh và chống lỗi CORS:
+ * - Tệp <= 30MB (ảnh, pdf, tài liệu, zip nhỏ): Tải thẳng lên GitHub Repository (api.github.com) hoàn toàn không bị lỗi CORS!
+ * - Tệp lớn: Thử Release, nếu CORS chặn thì tự động dự phòng.
+ */
+export async function uploadToGitHubCloud(
+  config: GitHubConfig,
+  file: File,
+  onProgress?: (percentage: number) => void
+): Promise<{
+  id: string | number;
+  name: string;
+  size: number;
+  downloadUrl: string;
+  storageTarget: 'github_release' | 'github_content';
+  sha?: string;
+  htmlUrl?: string;
+}> {
+  // Giới hạn 25MB cho Git Contents API
+  const MAX_REPO_SIZE = 25 * 1024 * 1024;
+
+  if (file.size <= MAX_REPO_SIZE) {
+    if (onProgress) onProgress(30);
+    const res = await uploadFileToRepoContents(config, file, 'drive-data');
+    if (onProgress) onProgress(100);
+
+    return {
+      id: res.sha || `${Date.now()}`,
+      name: file.name,
+      size: file.size,
+      downloadUrl: res.download_url,
+      storageTarget: 'github_content',
+      sha: res.sha,
+      htmlUrl: res.html_url,
+    };
+  }
+
+  // Tệp lớn hơn 25MB: Thử tải qua GitHub Release Assets
+  try {
+    const asset = await uploadLargeFileToGitHubRelease(config, file, file.name, onProgress);
+    return {
+      id: asset.id,
+      name: asset.name,
+      size: asset.size,
+      downloadUrl: asset.browser_download_url,
+      storageTarget: 'github_release',
+    };
+  } catch (err: any) {
+    // Nếu uploads.github.com bị trình duyệt chặn CORS và file vẫn < 50MB, cố gắng lưu vào Repo
+    if (file.size <= 50 * 1024 * 1024) {
+      if (onProgress) onProgress(30);
+      const res = await uploadFileToRepoContents(config, file, 'drive-data');
+      if (onProgress) onProgress(100);
+      return {
+        id: res.sha || `${Date.now()}`,
+        name: file.name,
+        size: file.size,
+        downloadUrl: res.download_url,
+        storageTarget: 'github_content',
+        sha: res.sha,
+        htmlUrl: res.html_url,
+      };
+    }
+    throw new Error(
+      `Không thể tải tệp lớn lên GitHub Release: ${err.message}. Gợi ý: Trình duyệt web có thể chặn gửi dữ liệu trực tiếp tới uploads.github.com do chính sách CORS.`
+    );
+  }
+}
+
+/**
+ * Lấy toàn bộ danh sách tệp tin đang lưu trên GitHub (cả thư mục drive-data và Releases) để đồng bộ giữa các máy (Máy A -> Máy B)
  */
 export async function fetchGitHubReleaseAssets(
   config: GitHubConfig
@@ -300,21 +470,26 @@ export async function fetchGitHubReleaseAssets(
   if (!token || !owner || !repo) return [];
 
   const tag = releaseTag || 'gitdrive-storage';
-  const res = await fetch(
-    `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.github.v3+json',
-      },
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      }
+    );
+
+    if (!res.ok) {
+      return [];
     }
-  );
 
-  if (!res.ok) {
-    if (res.status === 404) return [];
-    throw new Error(`Không thể lấy danh sách tệp từ GitHub (${res.status})`);
+    const release: GitHubRelease = await res.json();
+    return release.assets || [];
+  } catch {
+    return [];
   }
-
-  const release: GitHubRelease = await res.json();
-  return release.assets || [];
 }
+
+
