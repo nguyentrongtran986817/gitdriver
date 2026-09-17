@@ -384,22 +384,21 @@ export async function deleteGitHubRepoFile(
   config: GitHubConfig,
   path: string,
   sha?: string
-): Promise<void> {
+): Promise<boolean> {
   const { token, owner, repo, branch } = config;
-  const targetBranch = branch || 'main';
   let fileSha = sha;
 
   if (!fileSha) {
     try {
-      const getRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${targetBranch}`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github.v3+json',
-          },
-        }
-      );
+      const getUrl = branch
+        ? `https://api.github.com/repos/${owner}/${repo}/contents/${path}?ref=${branch}`
+        : `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
+      const getRes = await fetch(getUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+        },
+      });
       if (getRes.ok) {
         const data = await getRes.json();
         fileSha = data.sha;
@@ -409,21 +408,38 @@ export async function deleteGitHubRepoFile(
     }
   }
 
-  if (!fileSha) return;
+  if (!fileSha) return false;
 
-  await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+  const deleteBody: Record<string, any> = {
+    message: `Delete ${path} via GitDrive`,
+    sha: fileSha,
+  };
+  if (branch) deleteBody.branch = branch;
+
+  let delRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
     method: 'DELETE',
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github.v3+json',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      message: `Delete ${path} via GitDrive`,
-      sha: fileSha,
-      branch: targetBranch,
-    }),
+    body: JSON.stringify(deleteBody),
   });
+
+  if (!delRes.ok && branch) {
+    delete deleteBody.branch;
+    delRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(deleteBody),
+    });
+  }
+
+  return delRes.ok;
 }
 
 /**
