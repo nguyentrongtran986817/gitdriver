@@ -190,6 +190,7 @@ export const FileList: React.FC<FileListProps> = ({
                                     <span>Đổi tên tệp</span>
                                   </button>
                                 )}
+                                <div className="my-1 border-t border-slate-100" />
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -199,8 +200,21 @@ export const FileList: React.FC<FileListProps> = ({
                                   className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-rose-50 text-rose-600"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Chuyển vào thùng rác</span>
+                                  <span>{file.storageTarget.startsWith('github') ? 'Xoá tệp (Đồng bộ mọi máy)' : 'Chuyển vào thùng rác'}</span>
                                 </button>
+                                {file.storageTarget.startsWith('github') && onPermanentDelete && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveMenuId(null);
+                                      onPermanentDelete(file.id);
+                                    }}
+                                    className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-rose-100 text-rose-700 font-medium"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-700" />
+                                    <span>Xoá vĩnh viễn khỏi GitHub</span>
+                                  </button>
+                                )}
                               </>
                             ) : (
                               <>
