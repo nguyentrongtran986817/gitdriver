@@ -1,272 +1,445 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
-  Download,
-  Star,
-  Trash2,
+  Upload,
+  File,
   Github,
   HardDrive,
-  Copy,
-  Check,
-  ExternalLink,
-  Calendar,
-  FileText,
-  Info,
+  CheckCircle2,
+  AlertCircle,
+  FolderUp,
   Layers,
-  ShieldCheck
+  Sparkles,
+  Database
 } from 'lucide-react';
-import { FileItem } from '../types';
-import { formatBytes, formatDate } from '../utils/fileHelpers';
+import { FileCategory, FileItem, GitHubConfig, StorageTarget } from '../types';
+import { formatBytes, getFileCategory, getFileExtension } from '../utils/fileHelpers';
 import { FileIcon } from './FileIcon';
-import { getBlob } from '../utils/storageDb';
+import { saveBlob } from '../utils/storageDb';
+import { uploadToGitHubCloud } from '../utils/githubApi';
 
-interface FilePreviewModalProps {
-  file: FileItem | null;
+interface UploadModalProps {
+  isOpen: boolean;
   onClose: () => void;
-  onDownload: (file: FileItem) => void;
-  onToggleStar: (fileId: string) => void;
-  onTrash: (fileId: string) => void;
+  gitHubConfig: GitHubConfig;
+  onFileUploaded: (newFiles: FileItem[]) => void;
+  currentFolderId: string | null;
+  onOpenGitHubSettings: () => void;
+  defaultTarget?: 'auto' | 'github_release' | 'local';
 }
 
-export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
-  file,
+export const UploadModal: React.FC<UploadModalProps> = ({
+  isOpen,
   onClose,
-  onDownload,
-  onToggleStar,
-  onTrash,
+  gitHubConfig,
+  onFileUploaded,
+  currentFolderId,
+  onOpenGitHubSettings,
+  defaultTarget = 'auto',
 }) => {
-  const [copied, setCopied] = useState(false);
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [targetType, setTargetType] = useState<'auto' | 'github_release' | 'local'>(defaultTarget);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ [key: string]: number }>({});
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [description, setDescription] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    if (file?.localBlobKey) {
-      getBlob(file.localBlobKey).then((blob) => {
-        if (blob && active) {
-          const url = URL.createObjectURL(blob);
-          setBlobUrl(url);
-        }
-      });
-    } else {
-      setBlobUrl(null);
-    }
-    return () => {
-      active = false;
-      if (blobUrl) {
-        URL.revokeObjectURL(blobUrl);
-      }
-    };
-  }, [file?.id, file?.localBlobKey]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  if (!file) return null;
+  if (!isOpen) return null;
 
-  const isGithub = file.storageTarget.startsWith('github');
-
-  const handleCopyLink = () => {
-    const link = file.githubDownloadUrl || window.location.href;
-    navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
   };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const filesArray = Array.from(e.dataTransfer.files);
+      setSelectedFiles((prev) => [...prev, ...filesArray]);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArray = Array.from(e.target.files);
+      setSelectedFiles((prev) => [...prev, ...filesArray]);
+    }
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleStartUpload = async () => {
+    if (selectedFiles.length === 0) return;
+
+    setUploading(true);
+    setErrorMsg(null);
+    const createdFileItems: FileItem[] = [];
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      setUploadStatus(`Đang tải tệp ${i + 1}/${selectedFiles.length}: ${file.name}...`);
+
+      const ext = getFileExtension(file.name);
+      const category = getFileCategory(file.name, file.type);
+      const isLarge = file.size > 50 * 1024 * 1024; // > 50MB
+
+      // Xác định storage destination
+      let destination: StorageTarget = 'local_indexeddb';
+      if (targetType === 'github_release') {
+        destination = 'github_release';
+      } else if (targetType === 'auto') {
+        destination = gitHubConfig.isConnected && isLarge ? 'github_release' : 'local_indexeddb';
+      }
+
+      const fileId = `file-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      let githubAssetId: number | undefined;
+      let githubDownloadUrl: string | undefined;
+      let githubCommitSha: string | undefined;
+      let localBlobKey: string | undefined;
+
+      try {
+        if (destination === 'github_release') {
+          if (!gitHubConfig.isConnected || !gitHubConfig.token) {
+            throw new Error('Chưa kết nối GitHub Token. Vui lòng kết nối tài khoản GitHub hoặc chọn lưu trữ cục bộ.');
+          }
+
+          // Tải tệp lên GitHub một cách thông minh và chống lỗi CORS
+          const cloudRes = await uploadToGitHubCloud(
+            gitHubConfig,
+            file,
+            (percent) => {
+              setUploadProgress((prev) => ({ ...prev, [file.name]: percent }));
+            }
+          );
+
+          if (cloudRes.storageTarget === 'github_release') {
+            githubAssetId = typeof cloudRes.id === 'number' ? cloudRes.id : undefined;
+          } else {
+            githubCommitSha = cloudRes.sha;
+          }
+          githubDownloadUrl = cloudRes.downloadUrl;
+          destination = cloudRes.storageTarget;
+        } else {
+          // Lưu vào IndexedDB cục bộ (Hỗ trợ Blobs kích thước lớn không giới hạn 5MB)
+          localBlobKey = `blob-${fileId}`;
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 50 }));
+          await saveBlob(localBlobKey, file);
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }));
+        }
+
+        const newFileItem: FileItem = {
+          id: fileId,
+          name: file.name,
+          size: file.size,
+          category,
+          mimeType: file.type || 'application/octet-stream',
+          extension: ext,
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          folderId: currentFolderId,
+          isStarred: false,
+          isTrashed: false,
+          storageTarget: destination,
+          isLargeFile: isLarge || destination === 'github_release',
+          githubAssetId,
+          githubDownloadUrl,
+          githubCommitSha,
+          localBlobKey,
+          description: description.trim() || undefined,
+          tags: [
+            ext,
+            destination.startsWith('github') ? 'github-cloud' : 'indexeddb',
+            isLarge ? 'large-file' : 'standard-file',
+          ],
+        };
+
+        createdFileItems.push(newFileItem);
+      } catch (err: any) {
+        console.error('Lỗi khi tải tệp lên:', err);
+        setErrorMsg(`Lỗi khi tải "${file.name}": ${err.message || 'Lỗi không xác định'}`);
+        setUploading(false);
+        return;
+      }
+    }
+
+    setUploading(false);
+    onFileUploaded(createdFileItems);
+    onClose();
+  };
+
+  const totalBytesSelected = selectedFiles.reduce((acc, f) => acc + f.size, 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-slate-50/80">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-white shadow-xs border border-slate-200 flex items-center justify-center flex-shrink-0">
-              <FileIcon category={file.category} extension={file.extension} className="w-5 h-5" />
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/80">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center">
+              <Upload className="w-4 h-4" />
             </div>
-            <div className="min-w-0">
-              <h3 className="font-bold text-slate-900 truncate text-sm sm:text-base" title={file.name}>
-                {file.name}
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                Tải lên tệp tin vào Drive
               </h3>
-              <div className="flex items-center gap-2 text-xs text-slate-500">
-                <span>{formatBytes(file.size)}</span>
-                <span>•</span>
-                <span>{formatDate(file.updatedAt)}</span>
-              </div>
+              <p className="text-xs text-slate-500">
+                Hỗ trợ tệp đơn, nhiều tệp, và dữ liệu dung lượng lớn đến 2GB
+              </p>
             </div>
           </div>
-
-          <div className="flex items-center gap-1.5 flex-shrink-0">
-            <button
-              type="button"
-              onClick={() => onToggleStar(file.id)}
-              className={`p-2 rounded-xl border transition-colors ${
-                file.isStarred
-                  ? 'bg-amber-50 border-amber-200 text-amber-500'
-                  : 'bg-white border-slate-200 text-slate-400 hover:text-amber-500'
-              }`}
-              title={file.isStarred ? 'Bỏ gắn sao' : 'Gắn sao'}
-            >
-              <Star className={`w-4 h-4 ${file.isStarred ? 'fill-amber-500' : ''}`} />
-            </button>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 rounded-xl bg-white border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={uploading}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Modal Body / Preview Pane */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-6">
-          {/* Visual Preview */}
-          <div className="bg-slate-100/70 rounded-2xl p-4 border border-slate-200/80 flex items-center justify-center min-h-[220px]">
-            {file.category === 'image' && (file.thumbnailUrl || blobUrl) ? (
-              <img
-                src={blobUrl || file.thumbnailUrl}
-                alt={file.name}
-                className="max-h-72 max-w-full rounded-xl object-contain shadow-sm"
-              />
-            ) : file.category === 'video' && blobUrl ? (
-              <video src={blobUrl} controls className="max-h-72 max-w-full rounded-xl" />
-            ) : file.category === 'audio' && blobUrl ? (
-              <audio src={blobUrl} controls className="w-full max-w-md" />
-            ) : file.previewText ? (
-              <div className="w-full bg-slate-900 text-slate-100 font-mono text-xs p-4 rounded-xl max-h-64 overflow-y-auto leading-relaxed border border-slate-800">
-                <pre className="whitespace-pre-wrap">{file.previewText}</pre>
-              </div>
-            ) : (
-              <div className="text-center py-6">
-                <div className="w-16 h-16 rounded-2xl bg-white shadow-xs border border-slate-200 mx-auto mb-3 flex items-center justify-center">
-                  <FileIcon category={file.category} extension={file.extension} className="w-8 h-8" />
+        {/* Body */}
+        <div className="p-6 overflow-y-auto flex-1 space-y-4 text-xs">
+          {/* Storage Destination Selector */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1.5 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 text-blue-600" />
+              <span>Nơi lưu trữ tệp tin</span>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetType('auto')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'auto'
+                    ? 'border-blue-500 bg-blue-50/50 text-blue-900 ring-2 ring-blue-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-xs mb-0.5">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tự động tối ưu</span>
                 </div>
-                <p className="text-sm font-semibold text-slate-800">Xem trước tệp tin</p>
-                <p className="text-xs text-slate-500 mt-1 max-w-md">
-                  {file.isLargeFile
-                    ? 'Tệp tin dung lượng lớn lưu trữ trên GitHub Releases. Bạn có thể tải xuống ngay để mở trên máy tính.'
-                    : 'Nhấn nút "Tải xuống" bên dưới để lưu tệp về thiết bị của bạn.'}
+                <p className="text-[11px] text-slate-500">
+                  Tệp lớn &gt;50MB tự đẩy lên GitHub Release, tệp nhỏ lưu cục bộ siêu tốc.
                 </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTargetType('github_release')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'github_release'
+                    ? 'border-emerald-500 bg-emerald-50/50 text-emerald-900 ring-2 ring-emerald-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold text-xs mb-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <Github className="w-3.5 h-3.5 text-slate-900" />
+                    <span>GitHub Release (2GB)</span>
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-mono">
+                    2GB/file
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Kho lưu trữ đám mây GitHub cho Datasets, Videos, Zips lớn.
+                </p>
+              </button>
+            </div>
+
+            {targetType === 'github_release' && !gitHubConfig.isConnected && (
+              <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <span>Bạn chưa cấu hình GitHub Token và Repository.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenGitHubSettings}
+                  className="font-semibold text-blue-600 hover:underline flex-shrink-0 ml-2"
+                >
+                  Cấu hình ngay
+                </button>
               </div>
             )}
           </div>
 
-          {/* File Metadata Details */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/70 space-y-2">
-              <div className="flex items-center gap-1.5 font-semibold text-slate-700">
-                <Info className="w-3.5 h-3.5 text-blue-600" />
-                <span>Thông tin kỹ thuật</span>
-              </div>
-              <div className="space-y-1 text-slate-600">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Định dạng (MIME):</span>
-                  <span className="font-mono text-slate-800">{file.mimeType || file.extension}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Kích thước chính xác:</span>
-                  <span className="font-mono text-slate-800">{file.size.toLocaleString('vi-VN')} Bytes</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Thời gian tạo:</span>
-                  <span className="text-slate-800">{formatDate(file.createdAt)}</span>
-                </div>
-              </div>
+          {/* Drag & Drop Upload Zone */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all ${
+              isDragging
+                ? 'border-blue-500 bg-blue-50/70 scale-[1.01]'
+                : 'border-slate-300 hover:border-blue-400 bg-slate-50/60 hover:bg-slate-50'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <div className="w-12 h-12 rounded-2xl bg-white shadow-xs border border-slate-200 text-blue-600 flex items-center justify-center mx-auto mb-2.5">
+              <FolderUp className="w-6 h-6" />
             </div>
-
-            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/70 space-y-2">
-              <div className="flex items-center gap-1.5 font-semibold text-slate-700">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Nguồn & Dung lượng lưu trữ</span>
-              </div>
-              <div className="space-y-1 text-slate-600">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Cơ chế lưu trữ:</span>
-                  {isGithub ? (
-                    <span className="font-mono text-emerald-700 font-semibold flex items-center gap-1">
-                      <Github className="w-3 h-3" />
-                      {file.isLargeFile ? 'GitHub Releases (2GB)' : 'GitHub Repo'}
-                    </span>
-                  ) : (
-                    <span className="font-mono text-blue-700 font-semibold flex items-center gap-1">
-                      <HardDrive className="w-3 h-3" />
-                      IndexedDB (Local)
-                    </span>
-                  )}
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Mức dung lượng:</span>
-                  <span className="font-semibold text-slate-800">
-                    {file.isLargeFile ? 'Tệp dữ liệu lớn (>50MB)' : 'Tệp tiêu chuẩn'}
-                  </span>
-                </div>
-                {file.githubDownloadUrl && (
-                  <div className="truncate pt-1 text-[11px] text-blue-600">
-                    <a
-                      href={file.githubDownloadUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline flex items-center gap-1"
-                    >
-                      <span>Mở link gốc GitHub</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
+            <p className="font-semibold text-slate-800 text-xs sm:text-sm">
+              Kéo thả tệp tin vào đây, hoặc <span className="text-blue-600 underline">chọn từ thiết bị</span>
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Hỗ trợ mọi định dạng: ZIP, RAR, MP4, PDF, DOCX, PNG, CSV, ISO, v.v.
+            </p>
           </div>
 
-          {/* Description & Tags */}
-          {file.description && (
-            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/70 text-xs">
-              <span className="font-semibold text-slate-700 block mb-1">Mô tả tệp tin:</span>
-              <p className="text-slate-600 leading-relaxed">{file.description}</p>
+          {/* Selected Files List */}
+          {selectedFiles.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between font-semibold text-slate-700">
+                <span>
+                  Đã chọn {selectedFiles.length} tệp ({formatBytes(totalBytesSelected)})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFiles([])}
+                  className="text-rose-600 hover:underline font-normal text-[11px]"
+                  disabled={uploading}
+                >
+                  Xoá tất cả
+                </button>
+              </div>
+
+              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                {selectedFiles.map((file, idx) => {
+                  const percent = uploadProgress[file.name] || 0;
+                  return (
+                    <div
+                      key={idx}
+                      className="p-2 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <File className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-900 truncate text-xs" title={file.name}>
+                            {file.name}
+                          </p>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {formatBytes(file.size)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {uploading ? (
+                          <div className="w-16 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-blue-600 h-full transition-all duration-200"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFile(idx)}
+                            className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-slate-100"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Description */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">
+              Ghi chú / Mô tả tệp (Tùy chọn)
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Nhập mô tả tóm tắt cho tệp tin này..."
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 outline-none text-xs"
+            />
+          </div>
+
+          {/* Status and Error Messages */}
+          {errorMsg && (
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 font-medium leading-relaxed">{errorMsg}</div>
+              </div>
+
+              {gitHubConfig.owner && gitHubConfig.repo && (
+                <div className="pt-2 border-t border-rose-200/60 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="text-slate-600">
+                    💡 <strong>Cách giải quyết nhanh:</strong> Do chính sách bảo mật CORS của GitHub chặn trình duyệt tải trực tiếp file lớn (&gt;100MB), bạn có thể đính kèm file trực tiếp trên GitHub:
+                  </span>
+                  <a
+                    href={`https://github.com/${gitHubConfig.owner}/${gitHubConfig.repo}/releases`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-xs transition-colors"
+                  >
+                    <Github className="w-3.5 h-3.5" />
+                    <span>Mở Releases trên GitHub để thả file (Hỗ trợ 2GB)</span>
+                    <ExternalLink className="w-3 h-3 text-slate-400" />
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+
+          {uploading && uploadStatus && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-800 text-xs flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+              <span>{uploadStatus}</span>
             </div>
           )}
         </div>
 
-        {/* Modal Footer */}
+        {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/80 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleCopyLink}
-              className="px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-medium hover:bg-slate-100 flex items-center gap-1.5 transition-colors"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copied ? 'Đã sao chép link' : 'Sao chép link'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                onTrash(file.id);
-                onClose();
-              }}
-              className="px-3 py-2 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-medium flex items-center gap-1.5 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Chuyển vào thùng rác</span>
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-200/70 text-xs font-medium"
-            >
-              Đóng
-            </button>
-            <button
-              type="button"
-              onClick={() => onDownload(file)}
-              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-xs font-semibold flex items-center gap-2 shadow-sm transition-all"
-            >
-              <Download className="w-4 h-4" />
-              <span>Tải xuống tệp tin</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={uploading}
+            className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-200/70 text-xs font-medium disabled:opacity-50"
+          >
+            Hủy bỏ
+          </button>
+          <button
+            type="button"
+            onClick={handleStartUpload}
+            disabled={selectedFiles.length === 0 || uploading}
+            className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition-all"
+          >
+            <Upload className="w-4 h-4" />
+            <span>{uploading ? 'Đang tải lên...' : `Tải lên ${selectedFiles.length} tệp`}</span>
+          </button>
         </div>
       </div>
     </div>
