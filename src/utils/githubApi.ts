@@ -289,3 +289,32 @@ export async function uploadFileToRepoContents(
     download_url: result.content?.download_url,
   };
 }
+
+/**
+ * Lấy toàn bộ danh sách tệp tin đang lưu trên GitHub Releases để đồng bộ giữa các máy (Máy A -> Máy B)
+ */
+export async function fetchGitHubReleaseAssets(
+  config: GitHubConfig
+): Promise<GitHubReleaseAsset[]> {
+  const { token, owner, repo, releaseTag } = config;
+  if (!token || !owner || !repo) return [];
+
+  const tag = releaseTag || 'gitdrive-storage';
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/releases/tags/${tag}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+      },
+    }
+  );
+
+  if (!res.ok) {
+    if (res.status === 404) return [];
+    throw new Error(`Không thể lấy danh sách tệp từ GitHub (${res.status})`);
+  }
+
+  const release: GitHubRelease = await res.json();
+  return release.assets || [];
+}
