@@ -387,9 +387,29 @@ export const UploadModal: React.FC<UploadModalProps> = ({
 
           {/* Status and Error Messages */}
           {errorMsg && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-start gap-2 text-xs">
-              <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
-              <div className="flex-1">{errorMsg}</div>
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 font-medium leading-relaxed">{errorMsg}</div>
+              </div>
+
+              {gitHubConfig.owner && gitHubConfig.repo && (
+                <div className="pt-2 border-t border-rose-200/60 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <span className="text-slate-600">
+                    💡 <strong>Cách giải quyết nhanh:</strong> Do chính sách bảo mật CORS của GitHub chặn trình duyệt tải trực tiếp file lớn (&gt;100MB), bạn có thể đính kèm file trực tiếp trên GitHub:
+                  </span>
+                  <a
+                    href={`https://github.com/${gitHubConfig.owner}/${gitHubConfig.repo}/releases`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-xs transition-colors"
+                  >
+                    <Github className="w-3.5 h-3.5" />
+                    <span>Mở Releases trên GitHub để thả file (Hỗ trợ 2GB)</span>
+                    <ExternalLink className="w-3 h-3 text-slate-400" />
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
