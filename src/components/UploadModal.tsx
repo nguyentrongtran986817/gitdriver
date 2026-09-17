@@ -5,12 +5,14 @@ import {
   File,
   Github,
   HardDrive,
+  Cloud,
   CheckCircle2,
   AlertCircle,
   FolderUp,
   Layers,
   Sparkles,
-  Database
+  Database,
+  ExternalLink
 } from 'lucide-react';
 import { FileCategory, FileItem, GitHubConfig, StorageTarget } from '../types';
 import { formatBytes, getFileCategory, getFileExtension } from '../utils/fileHelpers';
@@ -98,6 +100,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       let destination: StorageTarget = 'local_indexeddb';
       if (targetType === 'github_release') {
         destination = 'github_release';
+      } else if (targetType === 'local') {
+        destination = 'local_indexeddb';
       } else if (targetType === 'auto') {
         destination = gitHubConfig.isConnected && isLarge ? 'github_release' : 'local_indexeddb';
       }
@@ -107,8 +111,40 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       let githubDownloadUrl: string | undefined;
       let githubCommitSha: string | undefined;
       let localBlobKey: string | undefined;
+      let thumbnailUrl: string | undefined;
+      let previewText: string | undefined;
+
+      // 1. Tạo thumbnail nhanh cho ảnh để xem trước tức thì
+      if (category === 'image' && file.size <= 15 * 1024 * 1024) {
+        try {
+          thumbnailUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => resolve(e.target?.result as string || '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(file);
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      // 2. Đọc nội dung xem trước cho tệp văn bản / mã nguồn
+      if ((category === 'code' || category === 'document') && file.size <= 2 * 1024 * 1024) {
+        try {
+          const rawText = await file.text();
+          previewText = rawText.length > 50000 ? rawText.substring(0, 50000) + '\n... (Đã rút gọn)' : rawText;
+        } catch {
+          // ignore
+        }
+      }
 
       try {
+        // 3. Luôn lưu blob vào IndexedDB cục bộ (nếu <= 250MB) để xem trực tiếp, phát video, tua nhanh mượt mà 0ms độ trễ
+        if (file.size <= 250 * 1024 * 1024) {
+          localBlobKey = `blob-${fileId}`;
+          await saveBlob(localBlobKey, file);
+        }
+
         if (destination === 'github_release') {
           if (!gitHubConfig.isConnected || !gitHubConfig.token) {
             throw new Error('Chưa kết nối GitHub Token. Vui lòng kết nối tài khoản GitHub hoặc chọn lưu trữ cục bộ.');
@@ -131,10 +167,6 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           githubDownloadUrl = cloudRes.downloadUrl;
           destination = cloudRes.storageTarget;
         } else {
-          // Lưu vào IndexedDB cục bộ (Hỗ trợ Blobs kích thước lớn không giới hạn 5MB)
-          localBlobKey = `blob-${fileId}`;
-          setUploadProgress((prev) => ({ ...prev, [file.name]: 50 }));
-          await saveBlob(localBlobKey, file);
           setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }));
         }
 
@@ -156,6 +188,8 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           githubDownloadUrl,
           githubCommitSha,
           localBlobKey,
+          thumbnailUrl,
+          previewText,
           description: description.trim() || undefined,
           tags: [
             ext,
@@ -219,7 +253,53 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               <Database className="w-3.5 h-3.5 text-blue-600" />
               <span>Nơi lưu trữ tệp tin</span>
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetType('github_release')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'github_release'
+                    ? 'border-emerald-500 bg-emerald-50/50 text-emerald-900 ring-2 ring-emerald-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold text-xs mb-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <Cloud className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Bộ nhớ Online</span>
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-mono">
+                    GitHub
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Lưu lên đám mây GitHub Release / Repo, đồng bộ mọi thiết bị.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTargetType('local')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'local'
+                    ? 'border-sky-500 bg-sky-50/50 text-sky-900 ring-2 ring-sky-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold text-xs mb-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <HardDrive className="w-3.5 h-3.5 text-sky-600" />
+                    <span>Bộ nhớ Offline</span>
+                  </span>
+                  <span className="text-[10px] bg-sky-100 text-sky-800 px-1 rounded font-mono">
+                    Cục bộ
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Lưu trong trình duyệt máy này (IndexedDB), tốc độ tức thì.
+                </p>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setTargetType('auto')}
@@ -234,30 +314,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
                   <span>Tự động tối ưu</span>
                 </div>
                 <p className="text-[11px] text-slate-500">
-                  Tệp lớn &gt;50MB tự đẩy lên GitHub Release, tệp nhỏ lưu cục bộ siêu tốc.
-                </p>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setTargetType('github_release')}
-                className={`p-3 rounded-xl border text-left transition-all ${
-                  targetType === 'github_release'
-                    ? 'border-emerald-500 bg-emerald-50/50 text-emerald-900 ring-2 ring-emerald-100'
-                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
-                }`}
-              >
-                <div className="flex items-center justify-between font-semibold text-xs mb-0.5">
-                  <span className="flex items-center gap-1.5">
-                    <Github className="w-3.5 h-3.5 text-slate-900" />
-                    <span>GitHub Release (2GB)</span>
-                  </span>
-                  <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-mono">
-                    2GB/file
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500">
-                  Kho lưu trữ đám mây GitHub cho Datasets, Videos, Zips lớn.
+                  Tự chọn Online nếu tệp lớn hoặc Offline nếu tệp nhỏ.
                 </p>
               </button>
             </div>

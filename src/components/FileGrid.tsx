@@ -22,6 +22,7 @@ interface FileGridProps {
   files: FileItem[];
   selectedFolderId: string | null;
   onOpenFolder: (folderId: string | null) => void;
+  onDeleteFolder?: (folderId: string) => void;
   onPreviewFile: (file: FileItem) => void;
   onDownloadFile: (file: FileItem) => void;
   onToggleStar: (fileId: string) => void;
@@ -36,6 +37,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
   folders,
   files,
   onOpenFolder,
+  onDeleteFolder,
   onPreviewFile,
   onDownloadFile,
   onToggleStar,
@@ -85,6 +87,20 @@ export const FileGrid: React.FC<FileGridProps> = ({
                     {folder.name}
                   </span>
                 </div>
+
+                {onDeleteFolder && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteFolder(folder.id);
+                    }}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors opacity-70 group-hover:opacity-100"
+                    title={`Xóa thư mục "${folder.name}"`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -132,12 +148,12 @@ export const FileGrid: React.FC<FileGridProps> = ({
                           }}
                           className={`p-1.5 rounded-lg transition-colors ${
                             file.isStarred
-                              ? 'text-amber-500 hover:text-amber-600'
-                              : 'text-slate-300 hover:text-amber-500 opacity-0 group-hover:opacity-100'
+                              ? 'text-amber-500 hover:text-amber-600 scale-105'
+                              : 'text-slate-300 hover:text-amber-500'
                           }`}
                           title={file.isStarred ? 'Bỏ gắn sao' : 'Gắn dấu sao'}
                         >
-                          <Star className={`w-4 h-4 ${file.isStarred ? 'fill-amber-500' : ''}`} />
+                          <Star className={`w-4 h-4 ${file.isStarred ? 'fill-amber-500 text-amber-500' : ''}`} />
                         </button>
                       )}
 
@@ -158,7 +174,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
                         {/* Menu Dropdown */}
                         {activeMenuId === file.id && (
                           <div
-                            className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 text-xs text-slate-700"
+                            className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 text-xs text-slate-700"
                             onClick={(e) => e.stopPropagation()}
                           >
                             {!isTrashView ? (
@@ -172,7 +188,18 @@ export const FileGrid: React.FC<FileGridProps> = ({
                                   className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-slate-100 text-left"
                                 >
                                   <Eye className="w-3.5 h-3.5 text-blue-500" />
-                                  <span>Xem chi tiết</span>
+                                  <span>Xem chi tiết / Phát video</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuId(null);
+                                    onToggleStar(file.id);
+                                  }}
+                                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-slate-100 text-left text-amber-600 font-medium"
+                                >
+                                  <Star className={`w-3.5 h-3.5 ${file.isStarred ? 'fill-amber-500 text-amber-500' : 'text-amber-500'}`} />
+                                  <span>{file.isStarred ? 'Bỏ gắn dấu sao' : 'Gắn dấu sao'}</span>
                                 </button>
                                 <button
                                   type="button"
@@ -210,7 +237,7 @@ export const FileGrid: React.FC<FileGridProps> = ({
                                   <Trash2 className="w-3.5 h-3.5" />
                                   <span>{isGithub ? 'Xoá tệp (Đồng bộ mọi máy)' : 'Chuyển vào thùng rác'}</span>
                                 </button>
-                                {isGithub && (
+                                {isGithub && onPermanentDelete && (
                                   <button
                                     type="button"
                                     onClick={() => {

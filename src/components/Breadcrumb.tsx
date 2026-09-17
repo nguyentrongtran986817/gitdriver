@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronRight, Home, Folder, HardDrive, Github, Star, Trash2 } from 'lucide-react';
+import { ChevronRight, Home, Folder, HardDrive, Cloud, Github, Star, Trash2 } from 'lucide-react';
 import { FolderItem, NavSection } from '../types';
 
 interface BreadcrumbProps {
@@ -21,8 +21,8 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({
     switch (currentSection) {
       case 'github_storage':
         return {
-          label: 'Kho lưu trữ GitHub (2GB)',
-          icon: <Github className="w-4 h-4 text-emerald-600" />,
+          label: 'Bộ nhớ Online',
+          icon: <Cloud className="w-4 h-4 text-emerald-600" />,
         };
       case 'starred':
         return {
@@ -37,8 +37,8 @@ export const Breadcrumb: React.FC<BreadcrumbProps> = ({
       case 'my_drive':
       default:
         return {
-          label: 'Bộ nhớ của tôi',
-          icon: <HardDrive className="w-4 h-4 text-blue-600" />,
+          label: 'Bộ nhớ Offline',
+          icon: <HardDrive className="w-4 h-4 text-sky-600" />,
         };
     }
   };

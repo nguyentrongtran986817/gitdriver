@@ -32,6 +32,7 @@ export interface FolderItem {
   id: string;
   name: string;
   parentId: string | null;
+  storageTarget?: 'offline' | 'online';
   color?: string;
   createdAt: string;
   updatedAt: string;

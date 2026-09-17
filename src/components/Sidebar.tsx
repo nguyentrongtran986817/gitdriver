@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   HardDrive,
   Github,
+  Cloud,
   Star,
   Trash2,
   Plus,
@@ -42,6 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Calculate storage usage
   const activeFiles = files.filter((f) => !f.isTrashed);
   const totalSizeBytes = activeFiles.reduce((acc, f) => acc + f.size, 0);
+  const offlineFiles = activeFiles.filter((f) => !f.storageTarget.startsWith('github'));
   const githubFiles = activeFiles.filter((f) => f.storageTarget.startsWith('github'));
   const githubSizeBytes = githubFiles.reduce((acc, f) => acc + f.size, 0);
   const starredCount = activeFiles.filter((f) => f.isStarred).length;
@@ -54,26 +56,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const navItems: { id: NavSection; label: string; icon: React.ReactNode; badge?: number | string }[] = [
     {
       id: 'my_drive',
-      label: 'Bộ nhớ của tôi',
-      icon: <HardDrive className="w-4 h-4" />,
-      badge: activeFiles.length,
+      label: 'Bộ nhớ Offline',
+      icon: <HardDrive className="w-4 h-4 text-sky-500" />,
+      badge: offlineFiles.length,
     },
     {
       id: 'github_storage',
-      label: 'Kho tệp lớn GitHub (2GB)',
-      icon: <Github className="w-4 h-4" />,
+      label: 'Bộ nhớ Online',
+      icon: <Cloud className="w-4 h-4 text-emerald-500" />,
       badge: `${githubFiles.length} tệp`,
     },
     {
       id: 'starred',
       label: 'Có gắn dấu sao',
-      icon: <Star className="w-4 h-4" />,
+      icon: <Star className="w-4 h-4 text-amber-500" />,
       badge: starredCount > 0 ? starredCount : undefined,
     },
     {
       id: 'trash',
       label: 'Thùng rác',
-      icon: <Trash2 className="w-4 h-4" />,
+      icon: <Trash2 className="w-4 h-4 text-rose-500" />,
       badge: trashedCount > 0 ? trashedCount : undefined,
     },
   ];

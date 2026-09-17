@@ -8,14 +8,18 @@ import {
   HardDrive,
   Trash2,
   RotateCcw,
-  Edit2
+  Edit2,
+  Folder
 } from 'lucide-react';
-import { FileItem } from '../types';
+import { FileItem, FolderItem } from '../types';
 import { formatBytes, formatDate } from '../utils/fileHelpers';
 import { FileIcon } from './FileIcon';
 
 interface FileListProps {
   files: FileItem[];
+  folders?: FolderItem[];
+  onOpenFolder?: (folderId: string | null) => void;
+  onDeleteFolder?: (folderId: string) => void;
   onPreviewFile: (file: FileItem) => void;
   onDownloadFile: (file: FileItem) => void;
   onToggleStar: (fileId: string) => void;
@@ -28,6 +32,9 @@ interface FileListProps {
 
 export const FileList: React.FC<FileListProps> = ({
   files,
+  folders = [],
+  onOpenFolder,
+  onDeleteFolder,
   onPreviewFile,
   onDownloadFile,
   onToggleStar,
@@ -45,10 +52,10 @@ export const FileList: React.FC<FileListProps> = ({
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
 
-  if (files.length === 0) {
+  if (files.length === 0 && folders.length === 0) {
     return (
       <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-200 p-8">
-        <p className="text-sm font-medium text-slate-700">Không tìm thấy tệp tin phù hợp</p>
+        <p className="text-sm font-medium text-slate-700">Không tìm thấy tệp tin hoặc thư mục phù hợp</p>
         <p className="text-xs text-slate-400 mt-1">Hãy thử thay đổi từ khoá hoặc điều chỉnh lại bộ lọc</p>
       </div>
     );
@@ -61,7 +68,7 @@ export const FileList: React.FC<FileListProps> = ({
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50/70 text-slate-500 font-semibold uppercase tracking-wider text-[10px]">
               <th className="py-3 px-4 w-10"></th>
-              <th className="py-3 px-3">Tên tệp tin</th>
+              <th className="py-3 px-3">Tên tệp tin / Thư mục</th>
               <th className="py-3 px-3 hidden md:table-cell">Nguồn lưu trữ</th>
               <th className="py-3 px-3">Kích thước</th>
               <th className="py-3 px-3 hidden sm:table-cell">Ngày sửa đổi</th>
@@ -69,6 +76,56 @@ export const FileList: React.FC<FileListProps> = ({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-slate-700">
+            {/* Folder Rows */}
+            {!isTrashView &&
+              folders.map((folder) => (
+                <tr
+                  key={folder.id}
+                  onDoubleClick={() => onOpenFolder && onOpenFolder(folder.id)}
+                  className="hover:bg-amber-50/30 transition-colors group cursor-pointer bg-slate-50/40"
+                >
+                  <td className="py-2.5 px-4" onClick={(e) => e.stopPropagation()}>
+                    <Folder className="w-4 h-4 text-amber-500" />
+                  </td>
+                  <td
+                    className="py-2.5 px-3 min-w-[200px]"
+                    onClick={() => onOpenFolder && onOpenFolder(folder.id)}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div
+                        className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: `${folder.color || '#f59e0b'}15` }}
+                      >
+                        <Folder className="w-4 h-4" style={{ color: folder.color || '#f59e0b' }} />
+                      </div>
+                      <span className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                        {folder.name}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-3 hidden md:table-cell">
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+                      Thư mục
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-3 font-mono text-slate-400">--</td>
+                  <td className="py-2.5 px-3 hidden sm:table-cell text-slate-400">
+                    {formatDate(folder.updatedAt)}
+                  </td>
+                  <td className="py-2.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                    {onDeleteFolder && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteFolder(folder.id)}
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                        title={`Xóa thư mục "${folder.name}"`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
             {files.map((file) => {
               const isGithub = file.storageTarget.startsWith('github');
 
@@ -86,12 +143,12 @@ export const FileList: React.FC<FileListProps> = ({
                         onClick={() => onToggleStar(file.id)}
                         className={`p-1 rounded transition-colors ${
                           file.isStarred
-                            ? 'text-amber-500'
-                            : 'text-slate-300 hover:text-amber-500 opacity-0 group-hover:opacity-100'
+                            ? 'text-amber-500 scale-105'
+                            : 'text-slate-300 hover:text-amber-500'
                         }`}
                         title={file.isStarred ? 'Bỏ gắn sao' : 'Gắn sao'}
                       >
-                        <Star className={`w-4 h-4 ${file.isStarred ? 'fill-amber-500' : ''}`} />
+                        <Star className={`w-4 h-4 ${file.isStarred ? 'fill-amber-500 text-amber-500' : ''}`} />
                       </button>
                     ) : (
                       <Trash2 className="w-3.5 h-3.5 text-slate-400" />
@@ -174,9 +231,31 @@ export const FileList: React.FC<FileListProps> = ({
                         </button>
 
                         {activeMenuId === file.id && (
-                          <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 text-xs text-slate-700 text-left">
+                          <div className="absolute right-0 top-full mt-1 w-48 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-40 text-xs text-slate-700 text-left">
                             {!isTrashView ? (
                               <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuId(null);
+                                    onPreviewFile(file);
+                                  }}
+                                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-slate-100 text-blue-600 font-medium"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>Xem chi tiết / Phát video</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveMenuId(null);
+                                    onToggleStar(file.id);
+                                  }}
+                                  className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-slate-100 text-amber-600 font-medium"
+                                >
+                                  <Star className={`w-3.5 h-3.5 ${file.isStarred ? 'fill-amber-500 text-amber-500' : 'text-amber-500'}`} />
+                                  <span>{file.isStarred ? 'Bỏ gắn dấu sao' : 'Gắn dấu sao'}</span>
+                                </button>
                                 {onRenameFile && (
                                   <button
                                     type="button"

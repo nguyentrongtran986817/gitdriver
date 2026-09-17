@@ -7,6 +7,7 @@ interface NewFolderModalProps {
   onClose: () => void;
   onCreateFolder: (folder: FolderItem) => void;
   currentFolderId: string | null;
+  storageTarget?: 'offline' | 'online';
 }
 
 const COLOR_OPTIONS = [
@@ -23,6 +24,7 @@ export const NewFolderModal: React.FC<NewFolderModalProps> = ({
   onClose,
   onCreateFolder,
   currentFolderId,
+  storageTarget = 'offline',
 }) => {
   const [folderName, setFolderName] = useState('');
   const [selectedColor, setSelectedColor] = useState(COLOR_OPTIONS[0]);
@@ -37,6 +39,7 @@ export const NewFolderModal: React.FC<NewFolderModalProps> = ({
       id: `folder-${Date.now()}`,
       name: folderName.trim(),
       parentId: currentFolderId,
+      storageTarget: (storageTarget as 'offline' | 'online') || 'offline',
       color: selectedColor,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -59,7 +62,12 @@ export const NewFolderModal: React.FC<NewFolderModalProps> = ({
             <div className="w-8 h-8 rounded-lg bg-amber-500 text-white flex items-center justify-center">
               <FolderPlus className="w-4 h-4" />
             </div>
-            <h3 className="font-bold text-slate-900 text-sm sm:text-base">Tạo thư mục mới</h3>
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base">Tạo thư mục mới</h3>
+              <p className="text-[11px] text-slate-500">
+                Nơi lưu: <span className="font-semibold text-blue-600">{storageTarget === 'online' ? 'Bộ nhớ Online (GitHub)' : 'Bộ nhớ Offline (Cục bộ)'}</span>
+              </p>
+            </div>
           </div>
           <button
             type="button"

@@ -336,9 +336,9 @@ export default function App() {
         if (currentSection === 'starred' && !file.isStarred) return false;
         if (currentSection === 'github_storage' && !file.storageTarget.startsWith('github')) return false;
 
-        // In 'my_drive', if no search and no filter, scope to folder
+        // In 'my_drive' or 'github_storage', if no search and no filter, scope to folder
         if (
-          currentSection === 'my_drive' &&
+          (currentSection === 'my_drive' || currentSection === 'github_storage') &&
           !filters.searchQuery &&
           filters.category === 'all' &&
           filters.sizeRange === 'all' &&
@@ -406,12 +406,24 @@ export default function App() {
     });
   }, [files, currentSection, selectedFolderId, filters]);
 
-  // Current folder's subfolders
+  // Current folder's subfolders (hỗ trợ cả Bộ nhớ Offline và Bộ nhớ Online)
   const currentSubFolders = useMemo(() => {
-    if (currentSection !== 'my_drive' || filters.searchQuery || filters.category !== 'all') {
+    if (
+      (currentSection !== 'my_drive' && currentSection !== 'github_storage') ||
+      filters.searchQuery ||
+      filters.category !== 'all'
+    ) {
       return [];
     }
-    return folders.filter((f) => !f.isTrashed && f.parentId === selectedFolderId);
+
+    const currentTarget = currentSection === 'github_storage' ? 'online' : 'offline';
+    return folders.filter((f) => {
+      if (f.isTrashed) return false;
+      if (f.parentId !== selectedFolderId) return false;
+      // Khớp theo storageTarget của thư mục (offline hoặc online)
+      const folderTarget = f.storageTarget || 'offline';
+      return folderTarget === currentTarget;
+    });
   }, [folders, currentSection, selectedFolderId, filters]);
 
   // File Operations
@@ -461,6 +473,7 @@ export default function App() {
         return f;
       })
     );
+    setPreviewFile((prev) => (prev && prev.id === fileId ? { ...prev, isStarred: !prev.isStarred } : prev));
   };
 
   const handleTrashFile = async (fileId: string) => {
@@ -572,6 +585,21 @@ export default function App() {
   const handleCreateFolder = (newFolder: FolderItem) => {
     setFolders((prev) => [newFolder, ...prev]);
     addToast('success', `Đã tạo thư mục "${newFolder.name}"`);
+  };
+
+  const handleDeleteFolder = (folderId: string) => {
+    const targetFolder = folders.find((f) => f.id === folderId);
+    const folderName = targetFolder?.name || 'thư mục này';
+    if (window.confirm(`Bạn có chắc muốn xóa thư mục "${folderName}" không? Các tệp bên trong sẽ được đưa ra thư mục gốc.`)) {
+      setFolders((prev) => prev.filter((f) => f.id !== folderId));
+      setFiles((prev) =>
+        prev.map((f) => (f.folderId === folderId ? { ...f, folderId: null } : f))
+      );
+      if (selectedFolderId === folderId) {
+        setSelectedFolderId(null);
+      }
+      addToast('info', `Đã xóa thư mục "${folderName}"`);
+    }
   };
 
   const handleResetSampleData = () => {
@@ -708,6 +736,7 @@ export default function App() {
                 files={filteredFiles}
                 selectedFolderId={selectedFolderId}
                 onOpenFolder={setSelectedFolderId}
+                onDeleteFolder={handleDeleteFolder}
                 onPreviewFile={setPreviewFile}
                 onDownloadFile={handleDownloadFile}
                 onToggleStar={handleToggleStar}
@@ -720,6 +749,9 @@ export default function App() {
             ) : (
               <FileList
                 files={filteredFiles}
+                folders={currentSubFolders}
+                onOpenFolder={setSelectedFolderId}
+                onDeleteFolder={handleDeleteFolder}
                 onPreviewFile={setPreviewFile}
                 onDownloadFile={handleDownloadFile}
                 onToggleStar={handleToggleStar}
@@ -738,6 +770,7 @@ export default function App() {
       {previewFile && (
         <FilePreviewModal
           file={previewFile}
+          gitHubConfig={gitHubConfig}
           onClose={() => setPreviewFile(null)}
           onDownload={handleDownloadFile}
           onToggleStar={handleToggleStar}
@@ -783,6 +816,7 @@ export default function App() {
           onClose={() => setIsNewFolderModalOpen(false)}
           onCreateFolder={handleCreateFolder}
           currentFolderId={selectedFolderId}
+          storageTarget={currentSection === 'github_storage' ? 'online' : 'offline'}
         />
       )}
 
