@@ -245,7 +245,6 @@ export async function uploadFileToRepoContents(
   folderPath: string = 'drive-data'
 ): Promise<{ sha: string; html_url: string; download_url: string }> {
   const { token, owner, repo, branch } = config;
-  const targetBranch = branch || 'main';
   const cleanPath = `${folderPath}/${file.name}`.replace(/^\/+/, '');
 
   // 1. Chuyển file sang base64
@@ -254,15 +253,15 @@ export async function uploadFileToRepoContents(
   // 2. Kiểm tra xem file đã tồn tại trên GitHub chưa để lấy SHA (nếu có thì ghi đè bản mới)
   let existingSha: string | undefined;
   try {
-    const checkRes = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(cleanPath)}?ref=${targetBranch}`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github.v3+json',
-        },
-      }
-    );
+    const checkUrl = branch
+      ? `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(cleanPath)}?ref=${branch}`
+      : `https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(cleanPath)}`;
+    const checkRes = await fetch(checkUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.v3+json',
+      },
+    });
     if (checkRes.ok) {
       const data = await checkRes.json();
       existingSha = data.sha;
@@ -271,8 +270,17 @@ export async function uploadFileToRepoContents(
     // ignore
   }
 
-  // 3. Gọi PUT để tải tệp lên GitHub repo
-  const putRes = await fetch(
+  // 3. Chuẩn bị payload tải tệp
+  const bodyPayload: Record<string, any> = {
+    message: `Upload ${file.name} via GitDrive`,
+    content: base64Content,
+    sha: existingSha,
+  };
+  if (branch) {
+    bodyPayload.branch = branch;
+  }
+
+  let putRes = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}`,
     {
       method: 'PUT',
@@ -281,14 +289,26 @@ export async function uploadFileToRepoContents(
         Accept: 'application/vnd.github.v3+json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        message: `Upload ${file.name} via GitDrive`,
-        content: base64Content,
-        branch: targetBranch,
-        sha: existingSha,
-      }),
+      body: JSON.stringify(bodyPayload),
     }
   );
+
+  // Nếu chỉ định nhánh thất bại (ví dụ cấu hình 'main' nhưng kho dùng 'master'), thử lại với nhánh mặc định
+  if (!putRes.ok && branch) {
+    delete bodyPayload.branch;
+    putRes = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(bodyPayload),
+      }
+    );
+  }
 
   if (!putRes.ok) {
     const err = await putRes.json().catch(() => ({}));
@@ -296,11 +316,11 @@ export async function uploadFileToRepoContents(
   }
 
   const result = await putRes.json();
-  const rawDownloadUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${targetBranch}/${cleanPath}`;
+  const rawDownloadUrl = result.content?.download_url || `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/${cleanPath}`;
 
   return {
     sha: result.content?.sha || '',
-    html_url: result.content?.html_url || `https://github.com/${owner}/${repo}/blob/${targetBranch}/${cleanPath}`,
+    html_url: result.content?.html_url || `https://github.com/${owner}/${repo}/blob/HEAD/${cleanPath}`,
     download_url: result.content?.download_url || rawDownloadUrl,
   };
 }
@@ -315,10 +335,12 @@ export async function fetchGitHubRepoContents(
   const { token, owner, repo, branch } = config;
   if (!token || !owner || !repo) return [];
 
-  const targetBranch = branch || 'main';
   try {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/contents/${folderPath}?ref=${targetBranch}`,
+    // Thử truy vấn có chỉ định branch trước
+    let res = await fetch(
+      branch
+        ? `https://api.github.com/repos/${owner}/${repo}/contents/${folderPath}?ref=${branch}`
+        : `https://api.github.com/repos/${owner}/${repo}/contents/${folderPath}`,
       {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -326,6 +348,19 @@ export async function fetchGitHubRepoContents(
         },
       }
     );
+
+    // Nếu không tìm thấy và có branch, thử truy vấn không truyền branch (dùng nhánh mặc định của kho)
+    if (!res.ok && branch) {
+      res = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/contents/${folderPath}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github.v3+json',
+          },
+        }
+      );
+    }
 
     if (!res.ok) {
       return [];
