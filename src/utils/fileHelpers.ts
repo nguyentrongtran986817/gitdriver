@@ -210,6 +210,7 @@ export function getInitialFiles(): FileItem[] {
       isStarred: true,
       isTrashed: false,
       storageTarget: 'local_indexeddb',
+      localBlobKey: 'sample-pdf-blob',
       isLargeFile: false,
       description: 'Báo cáo tổng kết doanh thu và chiến lược phát triển nền tảng quý 3.',
       tags: ['report', 'pdf', 'finance'],
@@ -284,6 +285,25 @@ export function getInitialFiles(): FileItem[] {
       isLargeFile: true,
       description: 'Bản thu âm podcast công nghệ: "Giải pháp lưu trữ Terabyte miễn phí trên GitHub".',
       tags: ['podcast', 'audio', 'github-release'],
+    },
+    {
+      id: 'file-8',
+      name: 'Bang_Ke_Doanh_Thu_Va_Ngan_Sach_2026.xlsx',
+      size: 425000, // ~415 KB
+      category: 'document',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      extension: 'xlsx',
+      updatedAt: new Date(Date.now() - 3 * 3600000).toISOString(),
+      createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
+      folderId: 'folder-1',
+      isStarred: true,
+      isTrashed: false,
+      storageTarget: 'local_indexeddb',
+      localBlobKey: 'sample-excel-blob',
+      isLargeFile: false,
+      description: 'Bảng tính Excel quản lý doanh thu dịch vụ, đơn hàng đối tác và phân bổ ngân sách 2026.',
+      tags: ['excel', 'spreadsheet', 'finance', 'budget', 'q1-2026'],
+      previewText: 'Bảng tính Excel: Doanh thu & Ngân sách 2026',
     },
   ];
 }

@@ -20,12 +20,23 @@ import {
   Volume2,
   VolumeX,
   Sparkles,
-  Loader2
+  Loader2,
+  Archive,
+  FileSpreadsheet,
+  FileText,
+  FileCode,
+  FolderArchive
 } from 'lucide-react';
 import { FileItem, GitHubConfig } from '../types';
 import { formatBytes, formatDate } from '../utils/fileHelpers';
 import { FileIcon } from './FileIcon';
 import { getBlob, saveBlob } from '../utils/storageDb';
+import { SpreadsheetViewer } from './preview/SpreadsheetViewer';
+import { PdfViewer } from './preview/PdfViewer';
+import { WordViewer } from './preview/WordViewer';
+import { CodeViewer } from './preview/CodeViewer';
+import { ImageViewer } from './preview/ImageViewer';
+import { generateSampleExcelBlob, generateSamplePdfBlob } from '../utils/sampleFileGenerators';
 
 interface FilePreviewModalProps {
   file: FileItem | null;
@@ -45,7 +56,10 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   onTrash,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [blobData, setBlobData] = useState<Blob | null>(null);
+  const [blobBuffer, setBlobBuffer] = useState<ArrayBuffer | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [blobText, setBlobText] = useState<string | null>(null);
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isStarred, setIsStarred] = useState(false);
@@ -65,39 +79,77 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
     }
   }, [file?.id, file?.isStarred]);
 
-  // Load blob or remote URL
+  // Load blob or remote URL whenever file changes
   useEffect(() => {
     let active = true;
     setLoadError(null);
+    setBlobData(null);
+    setBlobBuffer(null);
+    setBlobText(null);
 
     if (!file) {
       setBlobUrl(null);
       return;
     }
 
-    // 1. Try local IndexedDB
-    if (file.localBlobKey) {
-      getBlob(file.localBlobKey)
-        .then((blob) => {
-          if (blob && active) {
-            const url = URL.createObjectURL(blob);
-            setBlobUrl(url);
-          } else if (file.githubDownloadUrl && active) {
-            // Fallback to github download url
-            setBlobUrl(file.githubDownloadUrl);
+    const ext = (file.extension || '').toLowerCase();
+    const isExcel = ['xlsx', 'xls', 'csv', 'tsv', 'ods'].includes(ext);
+    const isPdf = ext === 'pdf';
+
+    const loadFileData = async () => {
+      try {
+        let loadedBlob: Blob | null = null;
+
+        // 1. Try local IndexedDB
+        if (file.localBlobKey) {
+          loadedBlob = await getBlob(file.localBlobKey);
+        }
+
+        // 2. Fallback to generated sample blobs if needed for initial files
+        if (!loadedBlob) {
+          if (file.localBlobKey === 'sample-excel-blob' || (isExcel && !file.githubDownloadUrl)) {
+            loadedBlob = generateSampleExcelBlob();
+            if (file.localBlobKey) {
+              saveBlob(file.localBlobKey, loadedBlob).catch(() => {});
+            }
+          } else if (file.localBlobKey === 'sample-pdf-blob' || (isPdf && !file.githubDownloadUrl)) {
+            loadedBlob = generateSamplePdfBlob();
+            if (file.localBlobKey) {
+              saveBlob(file.localBlobKey, loadedBlob).catch(() => {});
+            }
           }
-        })
-        .catch(() => {
-          if (file.githubDownloadUrl && active) {
-            setBlobUrl(file.githubDownloadUrl);
+        }
+
+        if (!active) return;
+
+        if (loadedBlob) {
+          setBlobData(loadedBlob);
+          const url = URL.createObjectURL(loadedBlob);
+          setBlobUrl(url);
+
+          // Extract array buffer for binary parsers (Excel/Word)
+          loadedBlob.arrayBuffer().then((buffer) => {
+            if (active) setBlobBuffer(buffer);
+          }).catch(() => {});
+
+          // Extract text for code/text files if <= 2MB
+          if (loadedBlob.size <= 2 * 1024 * 1024 && (file.category === 'code' || file.category === 'document')) {
+            loadedBlob.text().then((txt) => {
+              if (active) setBlobText(txt);
+            }).catch(() => {});
           }
-        });
-    } else if (file.githubDownloadUrl) {
-      // 2. Direct GitHub URL
-      setBlobUrl(file.githubDownloadUrl);
-    } else {
-      setBlobUrl(null);
-    }
+        } else if (file.githubDownloadUrl) {
+          // Direct remote URL
+          setBlobUrl(file.githubDownloadUrl);
+        }
+      } catch (err: any) {
+        if (active) {
+          console.warn('Could not load blob data:', err);
+        }
+      }
+    };
+
+    loadFileData();
 
     return () => {
       active = false;
@@ -109,8 +161,35 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
 
   if (!file) return null;
 
+  const ext = (file.extension || '').toLowerCase();
   const isGithub = file.storageTarget.startsWith('github');
   const previewSrc = blobUrl || file.thumbnailUrl || file.githubDownloadUrl;
+
+  // File type detectors
+  const isPdf = ext === 'pdf' || file.mimeType.includes('pdf');
+  const isExcel =
+    ['xlsx', 'xls', 'csv', 'tsv', 'ods'].includes(ext) ||
+    file.mimeType.includes('excel') ||
+    file.mimeType.includes('spreadsheet');
+  const isWord =
+    ['docx', 'doc', 'odt', 'rtf'].includes(ext) ||
+    file.mimeType.includes('word') ||
+    file.mimeType.includes('officedocument.wordprocessingml');
+  const isImage =
+    file.category === 'image' ||
+    ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext);
+  const isVideo =
+    file.category === 'video' ||
+    ['mp4', 'mov', 'webm', 'mkv', 'avi'].includes(ext);
+  const isAudio =
+    file.category === 'audio' ||
+    ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext);
+  const isCodeOrText =
+    file.category === 'code' ||
+    ['txt', 'md', 'json', 'js', 'ts', 'jsx', 'tsx', 'html', 'css', 'py', 'java', 'c', 'cpp', 'sql', 'sh', 'yaml', 'yml', 'xml', 'log', 'env'].includes(ext);
+  const isArchive =
+    file.category === 'archive' ||
+    ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'iso'].includes(ext);
 
   const handleCopyLink = () => {
     const link = file.githubDownloadUrl || window.location.href;
@@ -189,10 +268,15 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
         throw new Error(`Không thể nạp dữ liệu từ GitHub (${res.status})`);
       }
       const blob = await res.blob();
+      setBlobData(blob);
       const localKey = `blob-${file.id}`;
       await saveBlob(localKey, blob);
       const newUrl = URL.createObjectURL(blob);
       setBlobUrl(newUrl);
+
+      blob.arrayBuffer().then((buf) => {
+        setBlobBuffer(buf);
+      });
     } catch (err: any) {
       setLoadError(err.message || 'Lỗi khi nạp dữ liệu tệp');
     } finally {
@@ -203,11 +287,11 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
       <div
-        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-slate-50/80">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4 bg-slate-50/90">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-white shadow-xs border border-slate-200 flex items-center justify-center flex-shrink-0">
               <FileIcon category={file.category} extension={file.extension} className="w-5 h-5" />
@@ -256,18 +340,41 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
         {/* Modal Body / Preview Pane */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
           {/* Main Visual Preview Area */}
-          <div className="bg-slate-950/5 rounded-2xl p-3 sm:p-5 border border-slate-200/80 flex flex-col items-center justify-center min-h-[260px] relative overflow-hidden">
-            {/* 1. Video Player */}
-            {file.category === 'video' ? (
-              <div className="w-full flex flex-col items-center space-y-3">
+          <div className="w-full">
+            {/* 1. PDF Document Viewer */}
+            {isPdf ? (
+              <PdfViewer
+                blob={blobData}
+                blobUrl={blobUrl}
+                remoteUrl={file.githubDownloadUrl}
+                fileName={file.name}
+                previewText={file.previewText}
+              />
+            ) : isExcel ? (
+              /* 2. Excel & CSV Spreadsheet Viewer */
+              <SpreadsheetViewer
+                data={blobData || blobBuffer || file.previewText || ''}
+                fileName={file.name}
+              />
+            ) : isWord ? (
+              /* 3. Word Document Viewer (.docx, .doc) */
+              <WordViewer
+                data={blobData || blobBuffer}
+                fileName={file.name}
+                previewText={file.previewText}
+                remoteUrl={file.githubDownloadUrl}
+              />
+            ) : isVideo ? (
+              /* 4. Enhanced Video Player */
+              <div className="w-full flex flex-col items-center space-y-3 bg-slate-950/5 p-4 rounded-2xl border border-slate-200">
                 {previewSrc ? (
-                  <div className="w-full max-w-2xl bg-black rounded-2xl overflow-hidden shadow-lg border border-slate-800">
+                  <div className="w-full max-w-3xl bg-black rounded-2xl overflow-hidden shadow-lg border border-slate-800">
                     <video
                       ref={videoRef}
                       src={previewSrc}
                       controls
                       playsInline
-                      className="w-full max-h-[50vh] object-contain mx-auto"
+                      className="w-full max-h-[52vh] object-contain mx-auto"
                       onPlay={() => setIsPlaying(true)}
                       onPause={() => setIsPlaying(false)}
                       onTimeUpdate={() => {
@@ -306,10 +413,9 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </div>
                 )}
 
-                {/* Video Enhanced Seeking / Tua Bar */}
+                {/* Video Seeking / Tua Bar */}
                 {previewSrc && (
-                  <div className="w-full max-w-2xl bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-2.5 text-xs text-slate-700">
-                    {/* Tua Buttons */}
+                  <div className="w-full max-w-3xl bg-white p-3 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-2.5 text-xs text-slate-700">
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
@@ -357,7 +463,6 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                       )}
                     </div>
 
-                    {/* Speed Selector & Audio */}
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg">
                         {[0.75, 1, 1.25, 1.5, 2].map((spd) => (
@@ -397,25 +502,12 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </div>
                 )}
               </div>
-            ) : file.category === 'image' ? (
-              /* 2. Image Preview */
-              <div className="w-full flex flex-col items-center justify-center p-2">
-                {previewSrc ? (
-                  <img
-                    src={previewSrc}
-                    alt={file.name}
-                    className="max-h-[55vh] max-w-full rounded-2xl object-contain shadow-md border border-slate-200"
-                  />
-                ) : (
-                  <div className="text-center py-6">
-                    <FileIcon category={file.category} extension={file.extension} className="w-12 h-12 mx-auto mb-2 text-slate-400" />
-                    <p className="text-xs text-slate-500">Đang chuẩn bị bản xem trước hình ảnh...</p>
-                  </div>
-                )}
-              </div>
-            ) : file.category === 'audio' ? (
-              /* 3. Audio Player */
-              <div className="w-full max-w-md bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center space-y-4">
+            ) : isImage ? (
+              /* 5. Image Viewer with Zoom & Rotate */
+              <ImageViewer src={previewSrc || ''} alt={file.name} />
+            ) : isAudio ? (
+              /* 6. Audio Player */
+              <div className="w-full max-w-md mx-auto bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col items-center space-y-4">
                 <div className="w-16 h-16 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center">
                   <FileIcon category="audio" extension={file.extension} className="w-8 h-8" />
                 </div>
@@ -435,21 +527,55 @@ export const FilePreviewModal: React.FC<FilePreviewModalProps> = ({
                   </button>
                 )}
               </div>
-            ) : file.previewText ? (
-              /* 4. Text / Code Preview */
-              <div className="w-full bg-slate-900 text-slate-100 font-mono text-xs p-4 rounded-2xl max-h-[50vh] overflow-y-auto leading-relaxed border border-slate-800">
-                <pre className="whitespace-pre-wrap">{file.previewText}</pre>
+            ) : isCodeOrText || blobText || file.previewText ? (
+              /* 7. Code & Text Viewer with line numbers & search */
+              <CodeViewer
+                content={blobText || file.previewText || '// Không có nội dung văn bản'}
+                fileName={file.name}
+                extension={file.extension}
+              />
+            ) : isArchive ? (
+              /* 8. Archive Explorer Card */
+              <div className="w-full bg-slate-50 p-6 rounded-2xl border border-slate-200 flex flex-col items-center text-center">
+                <div className="w-16 h-16 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-3">
+                  <FolderArchive className="w-8 h-8" />
+                </div>
+                <h4 className="font-bold text-slate-900 text-sm sm:text-base">{file.name}</h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-md">
+                  Gói tệp nén lưu trữ dung lượng {formatBytes(file.size)}. Bạn có thể mở tải về để giải nén hoặc truy xuất kho dữ liệu trực tiếp.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2 justify-center">
+                  <button
+                    type="button"
+                    onClick={() => onDownload(file)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl flex items-center gap-2 shadow-xs transition-colors"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Tải tệp nén về máy</span>
+                  </button>
+                  {file.githubDownloadUrl && (
+                    <a
+                      href={file.githubDownloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl flex items-center gap-1.5 shadow-2xs transition-colors"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Xem nguồn GitHub Asset</span>
+                    </a>
+                  )}
+                </div>
               </div>
             ) : (
-              /* 5. Fallback File Preview Card */
-              <div className="text-center py-8">
+              /* 9. Universal Fallback */
+              <div className="text-center py-8 bg-slate-50 rounded-2xl border border-slate-200">
                 <div className="w-16 h-16 rounded-2xl bg-white shadow-xs border border-slate-200 mx-auto mb-3 flex items-center justify-center">
                   <FileIcon category={file.category} extension={file.extension} className="w-8 h-8" />
                 </div>
                 <p className="text-sm font-semibold text-slate-800">Tệp tin: {file.name}</p>
-                <p className="text-xs text-slate-500 mt-1 max-w-md">
+                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
                   {file.isLargeFile
-                    ? 'Tệp tin dung lượng lớn được lưu trữ an toàn trên GitHub Release. Bạn có thể tải trực tiếp về thiết bị.'
+                    ? 'Tệp tin dung lượng lớn được lưu trữ an toàn trên GitHub Release.'
                     : 'Nhấn nút "Tải xuống" bên dưới để lưu và mở tệp tin trên máy tính của bạn.'}
                 </p>
                 {file.githubDownloadUrl && (

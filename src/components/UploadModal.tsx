@@ -128,8 +128,13 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         }
       }
 
-      // 2. Đọc nội dung xem trước cho tệp văn bản / mã nguồn
-      if ((category === 'code' || category === 'document') && file.size <= 2 * 1024 * 1024) {
+      // 2. Đọc nội dung xem trước cho tệp văn bản / mã nguồn (tránh tệp nhị phân như PDF, Excel, Word)
+      const isPlainTextOrCode =
+        category === 'code' ||
+        ['txt', 'md', 'json', 'csv', 'tsv', 'log', 'yaml', 'yml', 'xml', 'env'].includes(ext) ||
+        file.type.startsWith('text/');
+
+      if (isPlainTextOrCode && file.size <= 2 * 1024 * 1024) {
         try {
           const rawText = await file.text();
           previewText = rawText.length > 50000 ? rawText.substring(0, 50000) + '\n... (Đã rút gọn)' : rawText;

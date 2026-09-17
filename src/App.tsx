@@ -59,7 +59,24 @@ export default function App() {
   const [files, setFiles] = useState<FileItem[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_FILES_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed: FileItem[] = JSON.parse(saved);
+        const hasExcel = parsed.some((f) => f.id === 'file-8' || f.name.toLowerCase().endsWith('.xlsx'));
+        if (!hasExcel) {
+          const init = getInitialFiles();
+          const file8 = init.find((f) => f.id === 'file-8');
+          if (file8) parsed.push(file8);
+        }
+        return parsed.map((f) => {
+          if (f.id === 'file-3' && !f.localBlobKey) {
+            return { ...f, localBlobKey: 'sample-pdf-blob' };
+          }
+          if (f.id === 'file-8' && !f.localBlobKey) {
+            return { ...f, localBlobKey: 'sample-excel-blob' };
+          }
+          return f;
+        });
+      }
     } catch {
       // ignore
     }
