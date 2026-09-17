@@ -219,20 +219,28 @@ export default function App() {
           };
         });
 
-        // Hợp nhất danh sách và bảo toàn 100% tệp tin (KHÔNG BAO GIỜ làm mất tệp đã tải lên trên máy)
-        const mergedMap = new Map<string, FileItem>();
-
-        // 1. Đưa tất cả các tệp hiện có vào trước để bảo toàn tuyệt đối mọi tệp vừa tải lên
-        prev.forEach((f) => {
-          mergedMap.set(f.name, f);
+        // Tập hợp tất cả các tệp tin hiện đang tồn tại trên GitHub
+        const cloudFilesMap = new Map<string, FileItem>();
+        [...syncedReleaseItems, ...syncedRepoItems].forEach((cloudItem) => {
+          cloudFilesMap.set(cloudItem.name, cloudItem);
         });
 
-        // 2. Cập nhật hoặc thêm mới các tệp quét được từ GitHub
-        [...syncedReleaseItems, ...syncedRepoItems].forEach((cloudItem) => {
-          const existing = mergedMap.get(cloudItem.name);
+        const mergedMap = new Map<string, FileItem>();
+
+        // 1. Đối với các tệp cục bộ (IndexedDB): Luôn giữ lại an toàn
+        prev.forEach((f) => {
+          if (!f.storageTarget.startsWith('github')) {
+            mergedMap.set(f.name, f);
+          }
+        });
+
+        // 2. Đối với các tệp đám mây GitHub:
+        // GitHub là nguồn chuẩn. Nếu tệp nào đã bị Máy A xóa khỏi GitHub, Máy B sẽ tự động xóa theo!
+        cloudFilesMap.forEach((cloudItem, name) => {
+          const existing = prev.find((f) => f.name === name);
           if (existing) {
-            // Cập nhật thông tin đám mây (URL, SHA, Asset ID) mà vẫn giữ nguyên thư mục, trạng thái sao, v.v.
-            mergedMap.set(cloudItem.name, {
+            // Cập nhật thông tin đám mây, bảo toàn thư mục và trạng thái sao
+            mergedMap.set(name, {
               ...existing,
               ...cloudItem,
               id: existing.id,
@@ -242,8 +250,8 @@ export default function App() {
               description: existing.description || cloudItem.description,
             });
           } else {
-            // Tệp mới được đồng bộ từ Máy A sang Máy B
-            mergedMap.set(cloudItem.name, cloudItem);
+            // Tệp mới được Máy A tải lên
+            mergedMap.set(name, cloudItem);
           }
         });
 
@@ -252,7 +260,7 @@ export default function App() {
 
       const totalCount = assets.length + repoFiles.length;
       if (showToast) {
-        addToast('success', `Đã đồng bộ thành công ${totalCount} tệp tin từ GitHub!`);
+        addToast('success', `Đã đồng bộ thành công: ${totalCount} tệp tin từ GitHub!`);
       }
     } catch (err: any) {
       console.error('Lỗi đồng bộ GitHub:', err);
@@ -455,7 +463,22 @@ export default function App() {
     );
   };
 
-  const handleTrashFile = (fileId: string) => {
+  const handleTrashFile = async (fileId: string) => {
+    const file = files.find((f) => f.id === fileId);
+    if (!file) return;
+
+    // Nếu là tệp lưu trên GitHub, hỏi người dùng có muốn xóa luôn trên kho GitHub không
+    if (file.storageTarget.startsWith('github') && gitHubConfig.isConnected && gitHubConfig.token) {
+      const confirmCloudDelete = window.confirm(
+        `Tệp "${file.name}" đang được lưu trữ trên kho GitHub.\n\nBạn có muốn xoá hoàn toàn tệp này khỏi GitHub để tất cả các thiết bị khác (Máy B, v.v.) cũng được đồng bộ xoá không?`
+      );
+
+      if (confirmCloudDelete) {
+        await handlePermanentDelete(fileId);
+        return;
+      }
+    }
+
     setFiles((prev) =>
       prev.map((f) => {
         if (f.id === fileId) {
@@ -483,33 +506,49 @@ export default function App() {
     const file = files.find((f) => f.id === fileId);
     if (!file) return;
 
-    if (window.confirm(`Bạn có chắc chắn muốn xoá vĩnh viễn tệp "${file.name}" không? Thao tác này không thể hoàn tác.`)) {
-      // Delete from IndexedDB
-      if (file.localBlobKey) {
-        await deleteBlob(file.localBlobKey);
-      }
-      // Delete from GitHub release or repo contents
-      if (gitHubConfig.isConnected && gitHubConfig.token) {
-        if (file.githubAssetId) {
-          deleteGitHubReleaseAsset(gitHubConfig, file.githubAssetId).catch(() => {});
-        } else if (file.storageTarget === 'github_content' || file.githubCommitSha) {
-          deleteGitHubRepoFile(gitHubConfig, `drive-data/${file.name}`, file.githubCommitSha).catch(() => {});
+    // Delete from IndexedDB
+    if (file.localBlobKey) {
+      await deleteBlob(file.localBlobKey);
+    }
+
+    // Delete from GitHub release or repo contents
+    if (gitHubConfig.isConnected && gitHubConfig.token) {
+      if (file.githubAssetId) {
+        addToast('info', `Đang xoá "${file.name}" khỏi GitHub Release...`);
+        try {
+          await deleteGitHubReleaseAsset(gitHubConfig, file.githubAssetId);
+        } catch (err: any) {
+          console.error('Lỗi khi xoá asset trên GitHub:', err);
+        }
+      } else if (file.storageTarget === 'github_content' || file.githubCommitSha) {
+        addToast('info', `Đang xoá "${file.name}" khỏi GitHub Repository...`);
+        try {
+          await deleteGitHubRepoFile(gitHubConfig, `drive-data/${file.name}`, file.githubCommitSha);
+        } catch (err: any) {
+          console.error('Lỗi khi xoá repo file trên GitHub:', err);
         }
       }
-
-      setFiles((prev) => prev.filter((f) => f.id !== fileId));
-      addToast('success', `Đã xoá vĩnh viễn "${file.name}"`);
     }
+
+    setFiles((prev) => prev.filter((f) => f.id !== fileId));
+    addToast('success', `Đã xoá vĩnh viễn "${file.name}" khỏi GitHub và thiết bị!`);
   };
 
-  const handleEmptyTrash = () => {
-    if (window.confirm('Bạn có chắc chắn muốn dọn sạch tất cả tệp trong Thùng rác?')) {
+  const handleEmptyTrash = async () => {
+    if (window.confirm('Bạn có chắc chắn muốn dọn sạch tất cả tệp trong Thùng rác? Các tệp trên GitHub cũng sẽ được xoá vĩnh viễn.')) {
       const trashed = files.filter((f) => f.isTrashed);
-      trashed.forEach((f) => {
-        if (f.localBlobKey) deleteBlob(f.localBlobKey);
-      });
+      for (const f of trashed) {
+        if (f.localBlobKey) await deleteBlob(f.localBlobKey);
+        if (gitHubConfig.isConnected && gitHubConfig.token) {
+          if (f.githubAssetId) {
+            deleteGitHubReleaseAsset(gitHubConfig, f.githubAssetId).catch(() => {});
+          } else if (f.storageTarget === 'github_content' || f.githubCommitSha) {
+            deleteGitHubRepoFile(gitHubConfig, `drive-data/${f.name}`, f.githubCommitSha).catch(() => {});
+          }
+        }
+      }
       setFiles((prev) => prev.filter((f) => !f.isTrashed));
-      addToast('success', 'Đã dọn sạch thùng rác');
+      addToast('success', 'Đã dọn sạch thùng rác và kho GitHub');
     }
   };
 
