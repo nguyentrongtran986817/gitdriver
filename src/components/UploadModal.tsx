@@ -16,7 +16,7 @@ import { FileCategory, FileItem, GitHubConfig, StorageTarget } from '../types';
 import { formatBytes, getFileCategory, getFileExtension } from '../utils/fileHelpers';
 import { FileIcon } from './FileIcon';
 import { saveBlob } from '../utils/storageDb';
-import { uploadLargeFileToGitHubRelease, uploadFileToRepoContents } from '../utils/githubApi';
+import { uploadToGitHubCloud } from '../utils/githubApi';
 
 interface UploadModalProps {
   isOpen: boolean;
@@ -105,6 +105,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       const fileId = `file-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       let githubAssetId: number | undefined;
       let githubDownloadUrl: string | undefined;
+      let githubCommitSha: string | undefined;
       let localBlobKey: string | undefined;
 
       try {
@@ -113,18 +114,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             throw new Error('Chưa kết nối GitHub Token. Vui lòng kết nối tài khoản GitHub hoặc chọn lưu trữ cục bộ.');
           }
 
-          // Tải tệp lớn lên GitHub Release Assets
-          const asset = await uploadLargeFileToGitHubRelease(
+          // Tải tệp lên GitHub một cách thông minh và chống lỗi CORS
+          const cloudRes = await uploadToGitHubCloud(
             gitHubConfig,
             file,
-            file.name,
             (percent) => {
               setUploadProgress((prev) => ({ ...prev, [file.name]: percent }));
             }
           );
 
-          githubAssetId = asset.id;
-          githubDownloadUrl = asset.browser_download_url;
+          if (cloudRes.storageTarget === 'github_release') {
+            githubAssetId = typeof cloudRes.id === 'number' ? cloudRes.id : undefined;
+          } else {
+            githubCommitSha = cloudRes.sha;
+          }
+          githubDownloadUrl = cloudRes.downloadUrl;
+          destination = cloudRes.storageTarget;
         } else {
           // Lưu vào IndexedDB cục bộ (Hỗ trợ Blobs kích thước lớn không giới hạn 5MB)
           localBlobKey = `blob-${fileId}`;
@@ -149,11 +154,12 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           isLargeFile: isLarge || destination === 'github_release',
           githubAssetId,
           githubDownloadUrl,
+          githubCommitSha,
           localBlobKey,
           description: description.trim() || undefined,
           tags: [
             ext,
-            destination === 'github_release' ? 'github-release-asset' : 'indexeddb',
+            destination.startsWith('github') ? 'github-cloud' : 'indexeddb',
             isLarge ? 'large-file' : 'standard-file',
           ],
         };
