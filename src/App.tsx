@@ -11,10 +11,12 @@ import {
   getInitialFiles,
   getInitialFolders,
   triggerDownloadBlob,
-  triggerDownloadUrl
+  triggerDownloadUrl,
+  getFileCategory,
+  getFileExtension
 } from './utils/fileHelpers';
 import { getBlob, deleteBlob } from './utils/storageDb';
-import { deleteGitHubReleaseAsset } from './utils/githubApi';
+import { deleteGitHubReleaseAsset, fetchGitHubReleaseAssets } from './utils/githubApi';
 
 // Subcomponents
 import { Header } from './components/Header';
@@ -113,8 +115,9 @@ export default function App() {
   const [uploadTargetType, setUploadTargetType] = useState<'auto' | 'github_release' | 'local'>('auto');
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
 
-  // 6. Toasts
+  // 6. Toasts & Sync
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const addToast = (type: 'success' | 'error' | 'info', message: string) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
@@ -127,6 +130,77 @@ export default function App() {
   const removeToast = (id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
+
+  // Đồng bộ tệp tin từ kho GitHub Release (Giúp Máy B thấy tệp do Máy A tải lên)
+  const handleSyncFromGitHub = async (showToast = true) => {
+    if (!gitHubConfig.isConnected || !gitHubConfig.token || !gitHubConfig.owner || !gitHubConfig.repo) {
+      if (showToast) addToast('info', 'Vui lòng kết nối GitHub Token và Repo để đồng bộ');
+      return;
+    }
+
+    setIsSyncing(true);
+    if (showToast) addToast('info', 'Đang quét tệp tin từ GitHub Releases...');
+
+    try {
+      const assets = await fetchGitHubReleaseAssets(gitHubConfig);
+
+      setFiles((prev) => {
+        // Bản đồ các tệp đã có id hoặc githubAssetId
+        const existingMap = new Map<number, FileItem>();
+        prev.forEach((f) => {
+          if (f.githubAssetId) existingMap.set(f.githubAssetId, f);
+        });
+
+        const syncedItems: FileItem[] = assets.map((asset) => {
+          const existing = existingMap.get(asset.id);
+          const ext = getFileExtension(asset.name);
+          const category = getFileCategory(asset.name, asset.content_type);
+
+          return {
+            id: existing ? existing.id : `gh-${asset.id}`,
+            name: asset.name,
+            size: asset.size,
+            category,
+            mimeType: asset.content_type || 'application/octet-stream',
+            extension: ext,
+            updatedAt: asset.updated_at || asset.created_at,
+            createdAt: asset.created_at,
+            folderId: existing ? existing.folderId : null,
+            isStarred: existing ? existing.isStarred : false,
+            isTrashed: false,
+            storageTarget: 'github_release',
+            isLargeFile: true,
+            githubAssetId: asset.id,
+            githubDownloadUrl: asset.browser_download_url,
+            description: existing?.description || `Tệp lưu trữ trên GitHub Releases (${gitHubConfig.owner}/${gitHubConfig.repo})`,
+            tags: ['github-release', 'cloud-synced', ext],
+          };
+        });
+
+        // Giữ lại các tệp cục bộ không phải của GitHub
+        const localOnlyFiles = prev.filter((f) => !f.storageTarget.startsWith('github'));
+        return [...syncedItems, ...localOnlyFiles];
+      });
+
+      if (showToast) {
+        addToast('success', `Đã đồng bộ thành công ${assets.length} tệp tin từ GitHub!`);
+      }
+    } catch (err: any) {
+      console.error('Lỗi đồng bộ GitHub:', err);
+      if (showToast) {
+        addToast('error', `Lỗi đồng bộ GitHub: ${err.message || 'Không thể tải dữ liệu'}`);
+      }
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Tự động đồng bộ tệp từ GitHub khi mở web nếu đã kết nối
+  useEffect(() => {
+    if (gitHubConfig.isConnected && gitHubConfig.token) {
+      handleSyncFromGitHub(false);
+    }
+  }, [gitHubConfig.isConnected, gitHubConfig.owner, gitHubConfig.repo]);
 
   // Sync to localStorage
   useEffect(() => {
@@ -454,6 +528,19 @@ export default function App() {
             />
 
             <div className="flex items-center gap-2">
+              {gitHubConfig.isConnected && (
+                <button
+                  type="button"
+                  onClick={() => handleSyncFromGitHub(true)}
+                  disabled={isSyncing}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                  title="Đồng bộ danh sách tệp từ kho GitHub Releases (để Máy B thấy tệp Máy A tải lên)"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                  <span>{isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ GitHub'}</span>
+                </button>
+              )}
+
               {currentSection === 'trash' && files.some((f) => f.isTrashed) && (
                 <button
                   type="button"
@@ -554,6 +641,11 @@ export default function App() {
           onSaveConfig={(cfg) => {
             setGitHubConfig(cfg);
             addToast('success', cfg.isConnected ? 'Đã lưu và kết nối GitHub thành công!' : 'Đã cập nhật cấu hình');
+            if (cfg.isConnected) {
+              setTimeout(() => {
+                handleSyncFromGitHub(true);
+              }, 400);
+            }
           }}
         />
       )}
