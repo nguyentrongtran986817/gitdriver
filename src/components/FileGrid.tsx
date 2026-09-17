@@ -208,8 +208,21 @@ export const FileGrid: React.FC<FileGridProps> = ({
                                   className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-rose-50 text-rose-600 text-left"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Chuyển vào thùng rác</span>
+                                  <span>{isGithub ? 'Xoá tệp (Đồng bộ mọi máy)' : 'Chuyển vào thùng rác'}</span>
                                 </button>
+                                {isGithub && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setActiveMenuId(null);
+                                      onPermanentDelete(file.id);
+                                    }}
+                                    className="w-full px-3 py-1.5 flex items-center gap-2 hover:bg-rose-100 text-rose-700 text-left font-medium"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5 text-rose-700" />
+                                    <span>Xoá vĩnh viễn khỏi GitHub</span>
+                                  </button>
+                                )}
                               </>
                             ) : (
                               <>
