@@ -1,689 +1,427 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useRef } from 'react';
 import {
-  FileItem,
-  FolderItem,
-  GitHubConfig,
-  FilterState,
-  NavSection,
-  ViewMode
-} from './types';
-import {
-  getInitialFiles,
-  getInitialFolders,
-  triggerDownloadBlob,
-  triggerDownloadUrl,
-  getFileCategory,
-  getFileExtension
-} from './utils/fileHelpers';
-import { getBlob, deleteBlob } from './utils/storageDb';
-import { deleteGitHubReleaseAsset, fetchGitHubReleaseAssets } from './utils/githubApi';
-
-// Subcomponents
-import { Header } from './components/Header';
-import { Sidebar } from './components/Sidebar';
-import { FilterBar } from './components/FilterBar';
-import { FileGrid } from './components/FileGrid';
-import { FileList } from './components/FileList';
-import { Breadcrumb } from './components/Breadcrumb';
-import { FilePreviewModal } from './components/FilePreviewModal';
-import { GitHubSettingsModal } from './components/GitHubSettingsModal';
-import { UploadModal } from './components/UploadModal';
-import { NewFolderModal } from './components/NewFolderModal';
-import { RenameModal } from './components/RenameModal';
-import { ToastContainer, ToastMessage } from './components/Toast';
-
-import {
-  HardDrive,
-  Github,
+  X,
   Upload,
-  FolderPlus,
-  Trash2,
-  RefreshCw,
-  Sparkles,
-  Info,
+  File,
+  Github,
+  HardDrive,
+  CheckCircle2,
+  AlertCircle,
+  FolderUp,
   Layers,
+  Sparkles,
   Database
 } from 'lucide-react';
+import { FileCategory, FileItem, GitHubConfig, StorageTarget } from '../types';
+import { formatBytes, getFileCategory, getFileExtension } from '../utils/fileHelpers';
+import { FileIcon } from './FileIcon';
+import { saveBlob } from '../utils/storageDb';
+import { uploadToGitHubCloud } from '../utils/githubApi';
 
-const STORAGE_FILES_KEY = 'gitdrive_files_v1';
-const STORAGE_FOLDERS_KEY = 'gitdrive_folders_v1';
-const STORAGE_GITHUB_KEY = 'gitdrive_github_config_v1';
+interface UploadModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  gitHubConfig: GitHubConfig;
+  onFileUploaded: (newFiles: FileItem[]) => void;
+  currentFolderId: string | null;
+  onOpenGitHubSettings: () => void;
+  defaultTarget?: 'auto' | 'github_release' | 'local';
+}
 
-export default function App() {
-  // 1. Files & Folders State
-  const [files, setFiles] = useState<FileItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_FILES_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return getInitialFiles();
-  });
+export const UploadModal: React.FC<UploadModalProps> = ({
+  isOpen,
+  onClose,
+  gitHubConfig,
+  onFileUploaded,
+  currentFolderId,
+  onOpenGitHubSettings,
+  defaultTarget = 'auto',
+}) => {
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [targetType, setTargetType] = useState<'auto' | 'github_release' | 'local'>(defaultTarget);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ [key: string]: number }>({});
+  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [description, setDescription] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const [folders, setFolders] = useState<FolderItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_FOLDERS_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return getInitialFolders();
-  });
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 2. GitHub Integration Config
-  const [gitHubConfig, setGitHubConfig] = useState<GitHubConfig>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_GITHUB_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // ignore
-    }
-    return {
-      token: '',
-      owner: '',
-      repo: '',
-      branch: 'main',
-      releaseTag: 'gitdrive-storage',
-      isConnected: false,
-      storageMode: 'releases_assets',
-    };
-  });
+  if (!isOpen) return null;
 
-  // 3. Navigation & View State
-  const [currentSection, setCurrentSection] = useState<NavSection>('my_drive');
-  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('grid');
-
-  // 4. Filters State
-  const [filters, setFilters] = useState<FilterState>({
-    searchQuery: '',
-    category: 'all',
-    dateRange: 'all',
-    sizeRange: 'all',
-    storageSource: 'all',
-    sortBy: 'date',
-    sortOrder: 'desc',
-    onlyStarred: false,
-  });
-
-  // 5. Modals State
-  const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
-  const [renameFile, setRenameFile] = useState<FileItem | null>(null);
-  const [isGitHubModalOpen, setIsGitHubModalOpen] = useState(false);
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [uploadTargetType, setUploadTargetType] = useState<'auto' | 'github_release' | 'local'>('auto');
-  const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
-
-  // 6. Toasts & Sync
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
-
-  const addToast = (type: 'success' | 'error' | 'info', message: string) => {
-    const id = `toast-${Date.now()}-${Math.random()}`;
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
   };
 
-  const removeToast = (id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
+  const handleDragLeave = () => {
+    setIsDragging(false);
   };
 
-  // Đồng bộ tệp tin từ kho GitHub Release (Giúp Máy B thấy tệp do Máy A tải lên)
-  const handleSyncFromGitHub = async (showToast = true) => {
-    if (!gitHubConfig.isConnected || !gitHubConfig.token || !gitHubConfig.owner || !gitHubConfig.repo) {
-      if (showToast) addToast('info', 'Vui lòng kết nối GitHub Token và Repo để đồng bộ');
-      return;
-    }
-
-    setIsSyncing(true);
-    if (showToast) addToast('info', 'Đang quét tệp tin từ GitHub Releases...');
-
-    try {
-      const assets = await fetchGitHubReleaseAssets(gitHubConfig);
-
-      setFiles((prev) => {
-        // Bản đồ các tệp đã có id hoặc githubAssetId
-        const existingMap = new Map<number, FileItem>();
-        prev.forEach((f) => {
-          if (f.githubAssetId) existingMap.set(f.githubAssetId, f);
-        });
-
-        const syncedItems: FileItem[] = assets.map((asset) => {
-          const existing = existingMap.get(asset.id);
-          const ext = getFileExtension(asset.name);
-          const category = getFileCategory(asset.name, asset.content_type);
-
-          return {
-            id: existing ? existing.id : `gh-${asset.id}`,
-            name: asset.name,
-            size: asset.size,
-            category,
-            mimeType: asset.content_type || 'application/octet-stream',
-            extension: ext,
-            updatedAt: asset.updated_at || asset.created_at,
-            createdAt: asset.created_at,
-            folderId: existing ? existing.folderId : null,
-            isStarred: existing ? existing.isStarred : false,
-            isTrashed: false,
-            storageTarget: 'github_release',
-            isLargeFile: true,
-            githubAssetId: asset.id,
-            githubDownloadUrl: asset.browser_download_url,
-            description: existing?.description || `Tệp lưu trữ trên GitHub Releases (${gitHubConfig.owner}/${gitHubConfig.repo})`,
-            tags: ['github-release', 'cloud-synced', ext],
-          };
-        });
-
-        // Giữ lại các tệp cục bộ không phải của GitHub
-        const localOnlyFiles = prev.filter((f) => !f.storageTarget.startsWith('github'));
-        return [...syncedItems, ...localOnlyFiles];
-      });
-
-      if (showToast) {
-        addToast('success', `Đã đồng bộ thành công ${assets.length} tệp tin từ GitHub!`);
-      }
-    } catch (err: any) {
-      console.error('Lỗi đồng bộ GitHub:', err);
-      if (showToast) {
-        addToast('error', `Lỗi đồng bộ GitHub: ${err.message || 'Không thể tải dữ liệu'}`);
-      }
-    } finally {
-      setIsSyncing(false);
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const filesArray = Array.from(e.dataTransfer.files);
+      setSelectedFiles((prev) => [...prev, ...filesArray]);
     }
   };
 
-  // Tự động đồng bộ tệp từ GitHub khi mở web nếu đã kết nối
-  useEffect(() => {
-    if (gitHubConfig.isConnected && gitHubConfig.token) {
-      handleSyncFromGitHub(false);
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArray = Array.from(e.target.files);
+      setSelectedFiles((prev) => [...prev, ...filesArray]);
     }
-  }, [gitHubConfig.isConnected, gitHubConfig.owner, gitHubConfig.repo]);
+  };
 
-  // Sync to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_FILES_KEY, JSON.stringify(files));
-    } catch {
-      // ignore
-    }
-  }, [files]);
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  };
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_FOLDERS_KEY, JSON.stringify(folders));
-    } catch {
-      // ignore
-    }
-  }, [folders]);
+  const handleStartUpload = async () => {
+    if (selectedFiles.length === 0) return;
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_GITHUB_KEY, JSON.stringify(gitHubConfig));
-    } catch {
-      // ignore
-    }
-  }, [gitHubConfig]);
+    setUploading(true);
+    setErrorMsg(null);
+    const createdFileItems: FileItem[] = [];
 
-  // Handle Drag & Drop directly onto window
-  useEffect(() => {
-    const handleWindowDragOver = (e: DragEvent) => {
-      e.preventDefault();
-    };
-    const handleWindowDrop = (e: DragEvent) => {
-      e.preventDefault();
-      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
-        setIsUploadModalOpen(true);
-      }
-    };
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      setUploadStatus(`Đang tải tệp ${i + 1}/${selectedFiles.length}: ${file.name}...`);
 
-    window.addEventListener('dragover', handleWindowDragOver);
-    window.addEventListener('drop', handleWindowDrop);
-    return () => {
-      window.removeEventListener('dragover', handleWindowDragOver);
-      window.removeEventListener('drop', handleWindowDrop);
-    };
-  }, []);
+      const ext = getFileExtension(file.name);
+      const category = getFileCategory(file.name, file.type);
+      const isLarge = file.size > 50 * 1024 * 1024; // > 50MB
 
-  // Filter & Search Logic
-  const filteredFiles = useMemo(() => {
-    return files.filter((file) => {
-      // Section check
-      if (currentSection === 'trash') {
-        if (!file.isTrashed) return false;
-      } else {
-        if (file.isTrashed) return false;
-
-        if (currentSection === 'starred' && !file.isStarred) return false;
-        if (currentSection === 'github_storage' && !file.storageTarget.startsWith('github')) return false;
-
-        // In 'my_drive', if no search and no filter, scope to folder
-        if (
-          currentSection === 'my_drive' &&
-          !filters.searchQuery &&
-          filters.category === 'all' &&
-          filters.sizeRange === 'all' &&
-          filters.dateRange === 'all' &&
-          filters.storageSource === 'all' &&
-          !filters.onlyStarred
-        ) {
-          if (file.folderId !== selectedFolderId) return false;
-        }
+      // Xác định storage destination
+      let destination: StorageTarget = 'local_indexeddb';
+      if (targetType === 'github_release') {
+        destination = 'github_release';
+      } else if (targetType === 'auto') {
+        destination = gitHubConfig.isConnected && isLarge ? 'github_release' : 'local_indexeddb';
       }
 
-      // Starred filter
-      if (filters.onlyStarred && !file.isStarred) return false;
+      const fileId = `file-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      let githubAssetId: number | undefined;
+      let githubDownloadUrl: string | undefined;
+      let githubCommitSha: string | undefined;
+      let localBlobKey: string | undefined;
 
-      // Category filter
-      if (filters.category !== 'all' && file.category !== filters.category) return false;
-
-      // Storage Source filter
-      if (filters.storageSource === 'github' && !file.storageTarget.startsWith('github')) return false;
-      if (filters.storageSource === 'local' && file.storageTarget !== 'local_indexeddb') return false;
-
-      // Size Range filter
-      if (filters.sizeRange === 'small' && file.size >= 1024 * 1024) return false; // < 1MB
-      if (filters.sizeRange === 'medium' && (file.size < 1024 * 1024 || file.size > 25 * 1024 * 1024)) return false; // 1-25MB
-      if (filters.sizeRange === 'large' && (file.size <= 25 * 1024 * 1024 || file.size > 100 * 1024 * 1024)) return false; // 25-100MB
-      if (filters.sizeRange === 'huge' && file.size <= 100 * 1024 * 1024) return false; // > 100MB
-
-      // Date Range filter
-      if (filters.dateRange !== 'all') {
-        const fileTime = new Date(file.updatedAt).getTime();
-        const now = Date.now();
-        if (filters.dateRange === 'today' && now - fileTime > 24 * 3600 * 1000) return false;
-        if (filters.dateRange === 'last7days' && now - fileTime > 7 * 24 * 3600 * 1000) return false;
-        if (filters.dateRange === 'last30days' && now - fileTime > 30 * 24 * 3600 * 1000) return false;
-        if (filters.dateRange === 'thisYear') {
-          const fileYear = new Date(file.updatedAt).getFullYear();
-          if (fileYear !== new Date().getFullYear()) return false;
-        }
-      }
-
-      // Search Query filter
-      if (filters.searchQuery.trim()) {
-        const query = filters.searchQuery.toLowerCase().trim();
-        const matchName = file.name.toLowerCase().includes(query);
-        const matchDesc = file.description?.toLowerCase().includes(query);
-        const matchTag = file.tags?.some((t) => t.toLowerCase().includes(query));
-        const matchExt = file.extension.toLowerCase().includes(query);
-        if (!matchName && !matchDesc && !matchTag && !matchExt) return false;
-      }
-
-      return true;
-    }).sort((a, b) => {
-      let comparison = 0;
-      if (filters.sortBy === 'name') {
-        comparison = a.name.localeCompare(b.name, 'vi');
-      } else if (filters.sortBy === 'size') {
-        comparison = a.size - b.size;
-      } else if (filters.sortBy === 'type') {
-        comparison = a.category.localeCompare(b.category);
-      } else {
-        // Date
-        comparison = new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime();
-      }
-      return filters.sortOrder === 'asc' ? comparison : -comparison;
-    });
-  }, [files, currentSection, selectedFolderId, filters]);
-
-  // Current folder's subfolders
-  const currentSubFolders = useMemo(() => {
-    if (currentSection !== 'my_drive' || filters.searchQuery || filters.category !== 'all') {
-      return [];
-    }
-    return folders.filter((f) => !f.isTrashed && f.parentId === selectedFolderId);
-  }, [folders, currentSection, selectedFolderId, filters]);
-
-  // File Operations
-  const handleDownloadFile = async (file: FileItem) => {
-    addToast('info', `Bắt đầu tải xuống "${file.name}"...`);
-
-    // 1. If stored in IndexedDB
-    if (file.localBlobKey) {
       try {
-        const blob = await getBlob(file.localBlobKey);
-        if (blob) {
-          triggerDownloadBlob(blob, file.name);
-          addToast('success', `Đã tải xuống "${file.name}" thành công!`);
-          return;
+        if (destination === 'github_release') {
+          if (!gitHubConfig.isConnected || !gitHubConfig.token) {
+            throw new Error('Chưa kết nối GitHub Token. Vui lòng kết nối tài khoản GitHub hoặc chọn lưu trữ cục bộ.');
+          }
+
+          // Tải tệp lên GitHub một cách thông minh và chống lỗi CORS
+          const cloudRes = await uploadToGitHubCloud(
+            gitHubConfig,
+            file,
+            (percent) => {
+              setUploadProgress((prev) => ({ ...prev, [file.name]: percent }));
+            }
+          );
+
+          if (cloudRes.storageTarget === 'github_release') {
+            githubAssetId = typeof cloudRes.id === 'number' ? cloudRes.id : undefined;
+          } else {
+            githubCommitSha = cloudRes.sha;
+          }
+          githubDownloadUrl = cloudRes.downloadUrl;
+          destination = cloudRes.storageTarget;
+        } else {
+          // Lưu vào IndexedDB cục bộ (Hỗ trợ Blobs kích thước lớn không giới hạn 5MB)
+          localBlobKey = `blob-${fileId}`;
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 50 }));
+          await saveBlob(localBlobKey, file);
+          setUploadProgress((prev) => ({ ...prev, [file.name]: 100 }));
         }
-      } catch (err) {
-        console.error('Failed to get blob from IndexedDB:', err);
+
+        const newFileItem: FileItem = {
+          id: fileId,
+          name: file.name,
+          size: file.size,
+          category,
+          mimeType: file.type || 'application/octet-stream',
+          extension: ext,
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          folderId: currentFolderId,
+          isStarred: false,
+          isTrashed: false,
+          storageTarget: destination,
+          isLargeFile: isLarge || destination === 'github_release',
+          githubAssetId,
+          githubDownloadUrl,
+          githubCommitSha,
+          localBlobKey,
+          description: description.trim() || undefined,
+          tags: [
+            ext,
+            destination.startsWith('github') ? 'github-cloud' : 'indexeddb',
+            isLarge ? 'large-file' : 'standard-file',
+          ],
+        };
+
+        createdFileItems.push(newFileItem);
+      } catch (err: any) {
+        console.error('Lỗi khi tải tệp lên:', err);
+        setErrorMsg(`Lỗi khi tải "${file.name}": ${err.message || 'Lỗi không xác định'}`);
+        setUploading(false);
+        return;
       }
     }
 
-    // 2. If stored in GitHub Release or Repo
-    if (file.githubDownloadUrl && file.githubDownloadUrl.startsWith('https://github.com')) {
-      triggerDownloadUrl(file.githubDownloadUrl, file.name);
-      addToast('success', `Đang tải tệp từ GitHub: "${file.name}"`);
-      return;
-    }
-
-    // 3. Fallback for sample demo files: synthesize appropriate binary/text Blob so download ALWAYS succeeds
-    try {
-      let content = file.previewText || `Tệp tin: ${file.name}\nDung lượng: ${file.size} bytes\nĐược lưu trữ an toàn bởi GitDrive.`;
-      const blob = new Blob([content], { type: file.mimeType || 'application/octet-stream' });
-      triggerDownloadBlob(blob, file.name);
-      addToast('success', `Đã tải xuống "${file.name}"!`);
-    } catch (err) {
-      addToast('error', `Lỗi tải tệp: ${(err as any).message}`);
-    }
+    setUploading(false);
+    onFileUploaded(createdFileItems);
+    onClose();
   };
 
-  const handleToggleStar = (fileId: string) => {
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id === fileId) {
-          const nextVal = !f.isStarred;
-          addToast('info', nextVal ? `Đã gắn sao "${f.name}"` : `Đã bỏ gắn sao "${f.name}"`);
-          return { ...f, isStarred: nextVal };
-        }
-        return f;
-      })
-    );
-  };
-
-  const handleTrashFile = (fileId: string) => {
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id === fileId) {
-          addToast('info', `Đã chuyển "${f.name}" vào thùng rác`);
-          return { ...f, isTrashed: true, trashedAt: new Date().toISOString() };
-        }
-        return f;
-      })
-    );
-  };
-
-  const handleRestoreFile = (fileId: string) => {
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id === fileId) {
-          addToast('success', `Đã khôi phục "${f.name}"`);
-          return { ...f, isTrashed: false, trashedAt: undefined };
-        }
-        return f;
-      })
-    );
-  };
-
-  const handlePermanentDelete = async (fileId: string) => {
-    const file = files.find((f) => f.id === fileId);
-    if (!file) return;
-
-    if (window.confirm(`Bạn có chắc chắn muốn xoá vĩnh viễn tệp "${file.name}" không? Thao tác này không thể hoàn tác.`)) {
-      // Delete from IndexedDB
-      if (file.localBlobKey) {
-        await deleteBlob(file.localBlobKey);
-      }
-      // If GitHub asset
-      if (file.githubAssetId && gitHubConfig.isConnected && gitHubConfig.token) {
-        deleteGitHubReleaseAsset(gitHubConfig, file.githubAssetId).catch(() => {});
-      }
-
-      setFiles((prev) => prev.filter((f) => f.id !== fileId));
-      addToast('success', `Đã xoá vĩnh viễn "${file.name}"`);
-    }
-  };
-
-  const handleEmptyTrash = () => {
-    if (window.confirm('Bạn có chắc chắn muốn dọn sạch tất cả tệp trong Thùng rác?')) {
-      const trashed = files.filter((f) => f.isTrashed);
-      trashed.forEach((f) => {
-        if (f.localBlobKey) deleteBlob(f.localBlobKey);
-      });
-      setFiles((prev) => prev.filter((f) => !f.isTrashed));
-      addToast('success', 'Đã dọn sạch thùng rác');
-    }
-  };
-
-  const handleRenameFile = (fileId: string, newName: string) => {
-    setFiles((prev) =>
-      prev.map((f) => {
-        if (f.id === fileId) {
-          addToast('success', `Đã đổi tên tệp thành "${newName}"`);
-          return { ...f, name: newName, updatedAt: new Date().toISOString() };
-        }
-        return f;
-      })
-    );
-  };
-
-  const handleFileUploaded = (newFiles: FileItem[]) => {
-    setFiles((prev) => [...newFiles, ...prev]);
-    addToast('success', `Đã tải lên thành công ${newFiles.length} tệp tin!`);
-  };
-
-  const handleCreateFolder = (newFolder: FolderItem) => {
-    setFolders((prev) => [newFolder, ...prev]);
-    addToast('success', `Đã tạo thư mục "${newFolder.name}"`);
-  };
-
-  const handleResetSampleData = () => {
-    if (window.confirm('Đặt lại dữ liệu mẫu mặc định của GitDrive?')) {
-      setFiles(getInitialFiles());
-      setFolders(getInitialFolders());
-      setSelectedFolderId(null);
-      setCurrentSection('my_drive');
-      addToast('info', 'Đã khôi phục dữ liệu mẫu ban đầu');
-    }
-  };
+  const totalBytesSelected = selectedFiles.reduce((acc, f) => acc + f.size, 0);
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 font-sans">
-      {/* Top Header */}
-      <Header
-        filters={filters}
-        onFilterChange={setFilters}
-        viewMode={viewMode}
-        onViewModeChange={setViewMode}
-        gitHubConfig={gitHubConfig}
-        onOpenGitHubModal={() => setIsGitHubModalOpen(true)}
-        onOpenUploadModal={() => {
-          setUploadTargetType('auto');
-          setIsUploadModalOpen(true);
-        }}
-        onOpenNewFolderModal={() => setIsNewFolderModalOpen(true)}
-      />
-
-      {/* Main Workspace Layout */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar */}
-        <Sidebar
-          currentSection={currentSection}
-          onSelectSection={(sec) => {
-            setCurrentSection(sec);
-            setSelectedFolderId(null);
-          }}
-          files={files}
-          gitHubConfig={gitHubConfig}
-          onOpenUploadModal={(target) => {
-            setUploadTargetType(target || 'auto');
-            setIsUploadModalOpen(true);
-          }}
-          onOpenNewFolderModal={() => setIsNewFolderModalOpen(true)}
-          onOpenGitHubModal={() => setIsGitHubModalOpen(true)}
-        />
-
-        {/* Center Content Area */}
-        <main className="flex-1 flex flex-col h-[calc(100vh-61px)] overflow-hidden bg-white">
-          {/* Quick Filter Bar */}
-          <FilterBar
-            filters={filters}
-            onFilterChange={setFilters}
-            totalFilteredCount={filteredFiles.length}
-          />
-
-          {/* Subheader: Breadcrumb & Contextual Actions */}
-          <div className="px-4 lg:px-6 py-2.5 bg-slate-50/50 border-b border-slate-200/80 flex items-center justify-between gap-4">
-            <Breadcrumb
-              currentSection={currentSection}
-              selectedFolderId={selectedFolderId}
-              folders={folders}
-              onSelectFolder={setSelectedFolderId}
-              onSelectSection={setCurrentSection}
-            />
-
-            <div className="flex items-center gap-2">
-              {gitHubConfig.isConnected && (
-                <button
-                  type="button"
-                  onClick={() => handleSyncFromGitHub(true)}
-                  disabled={isSyncing}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-200 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                  title="Đồng bộ danh sách tệp từ kho GitHub Releases (để Máy B thấy tệp Máy A tải lên)"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                  <span>{isSyncing ? 'Đang đồng bộ...' : 'Đồng bộ GitHub'}</span>
-                </button>
-              )}
-
-              {currentSection === 'trash' && files.some((f) => f.isTrashed) && (
-                <button
-                  type="button"
-                  onClick={handleEmptyTrash}
-                  className="px-3 py-1.5 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Dọn sạch thùng rác</span>
-                </button>
-              )}
-
-              {/* Reset to initial mock files helper */}
-              <button
-                type="button"
-                onClick={handleResetSampleData}
-                className="px-2.5 py-1.5 text-[11px] text-slate-500 hover:text-slate-800 hover:bg-slate-200/60 rounded-lg flex items-center gap-1 transition-colors"
-                title="Khôi phục tệp mẫu ban đầu"
-              >
-                <RefreshCw className="w-3 h-3" />
-                <span className="hidden sm:inline">Dữ liệu mẫu</span>
-              </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+      <div
+        className="bg-white rounded-3xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/80">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center">
+              <Upload className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                Tải lên tệp tin vào Drive
+              </h3>
+              <p className="text-xs text-slate-500">
+                Hỗ trợ tệp đơn, nhiều tệp, và dữ liệu dung lượng lớn đến 2GB
+              </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={uploading}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors disabled:opacity-50"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
 
-          {/* Scrollable File & Folder Canvas */}
-          <div className="flex-1 overflow-y-auto p-4 lg:p-6">
-            {/* GitHub Storage Promo Banner in 'github_storage' section */}
-            {currentSection === 'github_storage' && !gitHubConfig.isConnected && (
-              <div className="mb-6 p-4 bg-gradient-to-r from-slate-900 to-indigo-950 rounded-2xl text-white shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Github className="w-5 h-5 text-emerald-400" />
-                    <h4 className="font-bold text-sm">Kích hoạt Lưu trữ Dữ liệu Lớn trên GitHub (2GB)</h4>
-                  </div>
-                  <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
-                    Kết nối tài khoản GitHub của bạn để tự động lưu các tệp tin kích thước lớn (Datasets, Video 4K, Zip dung lượng cao) vào GitHub Releases hoàn toàn miễn phí.
-                  </p>
+        {/* Body */}
+        <div className="p-6 overflow-y-auto flex-1 space-y-4 text-xs">
+          {/* Storage Destination Selector */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1.5 flex items-center gap-1.5">
+              <Database className="w-3.5 h-3.5 text-blue-600" />
+              <span>Nơi lưu trữ tệp tin</span>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetType('auto')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'auto'
+                    ? 'border-blue-500 bg-blue-50/50 text-blue-900 ring-2 ring-blue-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-xs mb-0.5">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Tự động tối ưu</span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Tệp lớn &gt;50MB tự đẩy lên GitHub Release, tệp nhỏ lưu cục bộ siêu tốc.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setTargetType('github_release')}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  targetType === 'github_release'
+                    ? 'border-emerald-500 bg-emerald-50/50 text-emerald-900 ring-2 ring-emerald-100'
+                    : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between font-semibold text-xs mb-0.5">
+                  <span className="flex items-center gap-1.5">
+                    <Github className="w-3.5 h-3.5 text-slate-900" />
+                    <span>GitHub Release (2GB)</span>
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 px-1 rounded font-mono">
+                    2GB/file
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Kho lưu trữ đám mây GitHub cho Datasets, Videos, Zips lớn.
+                </p>
+              </button>
+            </div>
+
+            {targetType === 'github_release' && !gitHubConfig.isConnected && (
+              <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <span>Bạn chưa cấu hình GitHub Token và Repository.</span>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsGitHubModalOpen(true)}
-                  className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-xl text-xs font-bold transition-all shadow-sm flex-shrink-0"
+                  onClick={onOpenGitHubSettings}
+                  className="font-semibold text-blue-600 hover:underline flex-shrink-0 ml-2"
                 >
-                  Cấu hình GitHub ngay
+                  Cấu hình ngay
                 </button>
               </div>
             )}
-
-            {/* View Render */}
-            {viewMode === 'grid' ? (
-              <FileGrid
-                folders={currentSubFolders}
-                files={filteredFiles}
-                selectedFolderId={selectedFolderId}
-                onOpenFolder={setSelectedFolderId}
-                onPreviewFile={setPreviewFile}
-                onDownloadFile={handleDownloadFile}
-                onToggleStar={handleToggleStar}
-                onTrashFile={handleTrashFile}
-                onRestoreFile={handleRestoreFile}
-                onPermanentDelete={handlePermanentDelete}
-                onRenameFile={(file) => setRenameFile(file)}
-                isTrashView={currentSection === 'trash'}
-              />
-            ) : (
-              <FileList
-                files={filteredFiles}
-                onPreviewFile={setPreviewFile}
-                onDownloadFile={handleDownloadFile}
-                onToggleStar={handleToggleStar}
-                onTrashFile={handleTrashFile}
-                onRestoreFile={handleRestoreFile}
-                onPermanentDelete={handlePermanentDelete}
-                onRenameFile={(file) => setRenameFile(file)}
-                isTrashView={currentSection === 'trash'}
-              />
-            )}
           </div>
-        </main>
+
+          {/* Drag & Drop Upload Zone */}
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`border-2 border-dashed rounded-2xl p-6 text-center cursor-pointer transition-all ${
+              isDragging
+                ? 'border-blue-500 bg-blue-50/70 scale-[1.01]'
+                : 'border-slate-300 hover:border-blue-400 bg-slate-50/60 hover:bg-slate-50'
+            }`}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <div className="w-12 h-12 rounded-2xl bg-white shadow-xs border border-slate-200 text-blue-600 flex items-center justify-center mx-auto mb-2.5">
+              <FolderUp className="w-6 h-6" />
+            </div>
+            <p className="font-semibold text-slate-800 text-xs sm:text-sm">
+              Kéo thả tệp tin vào đây, hoặc <span className="text-blue-600 underline">chọn từ thiết bị</span>
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Hỗ trợ mọi định dạng: ZIP, RAR, MP4, PDF, DOCX, PNG, CSV, ISO, v.v.
+            </p>
+          </div>
+
+          {/* Selected Files List */}
+          {selectedFiles.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between font-semibold text-slate-700">
+                <span>
+                  Đã chọn {selectedFiles.length} tệp ({formatBytes(totalBytesSelected)})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedFiles([])}
+                  className="text-rose-600 hover:underline font-normal text-[11px]"
+                  disabled={uploading}
+                >
+                  Xoá tất cả
+                </button>
+              </div>
+
+              <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+                {selectedFiles.map((file, idx) => {
+                  const percent = uploadProgress[file.name] || 0;
+                  return (
+                    <div
+                      key={idx}
+                      className="p-2 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <File className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-900 truncate text-xs" title={file.name}>
+                            {file.name}
+                          </p>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {formatBytes(file.size)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {uploading ? (
+                          <div className="w-16 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-blue-600 h-full transition-all duration-200"
+                              style={{ width: `${percent}%` }}
+                            />
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFile(idx)}
+                            className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-slate-100"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Description */}
+          <div>
+            <label className="font-semibold text-slate-700 block mb-1">
+              Ghi chú / Mô tả tệp (Tùy chọn)
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Nhập mô tả tóm tắt cho tệp tin này..."
+              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 outline-none text-xs"
+            />
+          </div>
+
+          {/* Status and Error Messages */}
+          {errorMsg && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 flex items-start gap-2 text-xs">
+              <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">{errorMsg}</div>
+            </div>
+          )}
+
+          {uploading && uploadStatus && (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-800 text-xs flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+              <span>{uploadStatus}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/80 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={uploading}
+            className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-200/70 text-xs font-medium disabled:opacity-50"
+          >
+            Hủy bỏ
+          </button>
+          <button
+            type="button"
+            onClick={handleStartUpload}
+            disabled={selectedFiles.length === 0 || uploading}
+            className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition-all"
+          >
+            <Upload className="w-4 h-4" />
+            <span>{uploading ? 'Đang tải lên...' : `Tải lên ${selectedFiles.length} tệp`}</span>
+          </button>
+        </div>
       </div>
-
-      {/* Modals */}
-      {previewFile && (
-        <FilePreviewModal
-          file={previewFile}
-          onClose={() => setPreviewFile(null)}
-          onDownload={handleDownloadFile}
-          onToggleStar={handleToggleStar}
-          onTrash={handleTrashFile}
-        />
-      )}
-
-      {isGitHubModalOpen && (
-        <GitHubSettingsModal
-          config={gitHubConfig}
-          isOpen={isGitHubModalOpen}
-          onClose={() => setIsGitHubModalOpen(false)}
-          onSaveConfig={(cfg) => {
-            setGitHubConfig(cfg);
-            addToast('success', cfg.isConnected ? 'Đã lưu và kết nối GitHub thành công!' : 'Đã cập nhật cấu hình');
-            if (cfg.isConnected) {
-              setTimeout(() => {
-                handleSyncFromGitHub(true);
-              }, 400);
-            }
-          }}
-        />
-      )}
-
-      {isUploadModalOpen && (
-        <UploadModal
-          isOpen={isUploadModalOpen}
-          onClose={() => setIsUploadModalOpen(false)}
-          gitHubConfig={gitHubConfig}
-          onFileUploaded={handleFileUploaded}
-          currentFolderId={selectedFolderId}
-          onOpenGitHubSettings={() => {
-            setIsUploadModalOpen(false);
-            setIsGitHubModalOpen(true);
-          }}
-          defaultTarget={uploadTargetType}
-        />
-      )}
-
-      {isNewFolderModalOpen && (
-        <NewFolderModal
-          isOpen={isNewFolderModalOpen}
-          onClose={() => setIsNewFolderModalOpen(false)}
-          onCreateFolder={handleCreateFolder}
-          currentFolderId={selectedFolderId}
-        />
-      )}
-
-      {renameFile && (
-        <RenameModal
-          file={renameFile}
-          onClose={() => setRenameFile(null)}
-          onRename={handleRenameFile}
-        />
-      )}
-
-      {/* Floating Toast Notifications */}
-      <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
   );
-}
+};
