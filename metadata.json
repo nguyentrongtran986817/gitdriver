@@ -1,0 +1,6 @@
+{
+  "name": "GitDrive - Cloud Storage & GitHub Large Files",
+  "description": "Ứng dụng lưu trữ tệp tin tương tự Drive hỗ trợ tải lên/xuống, bộ lọc tìm kiếm nhanh và lưu trữ dữ liệu lớn qua GitHub.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
